@@ -1,0 +1,7 @@
+bin/
+obj/
+.vs/
+*.user
+.codex_tmp/
+ready/**/*.pdb
+ready-win-x86/**/*.pdb
