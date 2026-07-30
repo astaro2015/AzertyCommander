@@ -610,7 +610,7 @@ internal sealed class MainForm : Form
                 _favoriteDirectoriesMenu = null;
             }
 
-            DisposeFavoriteMenuLater(menu);
+            DisposeContextMenuLater(menu);
         };
 
         var favorites = _settings.FavoriteDirectories.ToList();
@@ -676,7 +676,7 @@ internal sealed class MainForm : Form
         menu.Show(screenLocation);
     }
 
-    private void DisposeFavoriteMenuLater(ContextMenuStrip menu)
+    private void DisposeContextMenuLater(ContextMenuStrip menu)
     {
         if (menu.IsDisposed)
         {
@@ -1296,7 +1296,7 @@ internal sealed class MainForm : Form
     private void ShowQuickLaunchEmptyMenu(Point screenLocation)
     {
         var menu = new ContextMenuStrip();
-        menu.Closed += (_, _) => menu.Dispose();
+        menu.Closed += (_, _) => DisposeContextMenuLater(menu);
         menu.Items.Add("Добавить файл...", null, (_, _) => AddQuickLaunchByDialog());
 
         var focused = _activePanel.FocusedEntry;
@@ -1317,7 +1317,7 @@ internal sealed class MainForm : Form
     private void ShowQuickLaunchItemMenu(QuickLaunchEntry entry, Point screenLocation)
     {
         var menu = new ContextMenuStrip();
-        menu.Closed += (_, _) => menu.Dispose();
+        menu.Closed += (_, _) => DisposeContextMenuLater(menu);
         menu.Items.Add("Запустить", null, (_, _) => LaunchQuickEntry(entry));
         menu.Items.Add("Открыть папку", null, (_, _) => OpenQuickEntryFolder(entry));
         menu.Items.Add(new ToolStripSeparator());
