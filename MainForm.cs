@@ -1561,8 +1561,9 @@ internal sealed class MainForm : Form
 
         try
         {
+            var focusedPath = panel.FocusedEntry?.FullPath;
             var list = await session.ListAsync(CancellationToken.None);
-            panel.LoadFtpEntries(profile.Name, session.CurrentDirectory, list);
+            panel.LoadFtpEntries(profile.Name, session.CurrentDirectory, list, focusedPath);
         }
         catch (Exception ex)
         {
@@ -1579,9 +1580,11 @@ internal sealed class MainForm : Form
 
         await RunOperationAsync("FTP переход", async context =>
         {
+            var previousPath = session.CurrentDirectory;
             await session.ChangeDirectoryAsync(path, context.CancellationToken);
             var list = await session.ListAsync(context.CancellationToken);
-            panel.LoadFtpEntries(profile.Name, session.CurrentDirectory, list);
+            var selectPath = IsFtpParentNavigation(previousPath, session.CurrentDirectory) ? previousPath : null;
+            panel.LoadFtpEntries(profile.Name, session.CurrentDirectory, list, selectPath);
         });
 
         panel.FocusList();
@@ -1597,6 +1600,14 @@ internal sealed class MainForm : Form
         }
 
         MessageBox.Show(this, "FTP-файл можно скачать в соседнюю панель клавишей F5.", "FTP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private static bool IsFtpParentNavigation(string previousPath, string currentPath)
+    {
+        var normalizedPrevious = FtpClientSession.NormalizeRemotePath(previousPath);
+        var normalizedCurrent = FtpClientSession.NormalizeRemotePath(currentPath);
+        return !string.Equals(normalizedPrevious, normalizedCurrent, StringComparison.Ordinal) &&
+            string.Equals(FtpClientSession.ParentRemotePath(normalizedPrevious), normalizedCurrent, StringComparison.Ordinal);
     }
 
     private void DisconnectFtpPanel(FilePanel panel)

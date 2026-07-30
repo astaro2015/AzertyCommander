@@ -419,6 +419,24 @@ internal static class SelfTest
                 return false;
             }
 
+            panel.OpenFocusedEntry();
+            Application.DoEvents();
+            if (panel.CurrentPath != folderPath || panel.FocusedEntry is not { IsParent: true })
+            {
+                Console.Error.WriteLine("Folder enter top-row focus check failed.");
+                return false;
+            }
+
+            panel.NavigateUp();
+            Application.DoEvents();
+            if (panel.CurrentPath != left ||
+                panel.FocusedEntry is not { IsDirectory: true } returnedEntry ||
+                !string.Equals(returnedEntry.FullPath, folderPath, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine("Folder leave return focus check failed.");
+                return false;
+            }
+
             panel.ClearSelection();
             panel.ToggleFocusedSelectionAndMoveNext();
             panel.ToggleFocusedSelectionAndMoveNext();

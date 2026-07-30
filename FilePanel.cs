@@ -121,7 +121,7 @@ internal sealed class FilePanel : UserControl
         }
     }
 
-    public void LoadPath(string path)
+    public void LoadPath(string path, string? selectPathAfterLoad = null)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -136,6 +136,7 @@ internal sealed class FilePanel : UserControl
 
         if (File.Exists(path))
         {
+            selectPathAfterLoad ??= path;
             path = Path.GetDirectoryName(path) ?? path;
         }
 
@@ -164,9 +165,15 @@ internal sealed class FilePanel : UserControl
         CurrentPath = fullPath;
         _lastLocalPath = fullPath;
         RefreshList();
+        if (!string.IsNullOrWhiteSpace(selectPathAfterLoad) && SelectPathCore(selectPathAfterLoad, focusList: false))
+        {
+            return;
+        }
+
+        SelectFirstRow();
     }
 
-    public void LoadFtpEntries(string connectionName, string remotePath, IReadOnlyList<FtpRemoteEntry> remoteEntries)
+    public void LoadFtpEntries(string connectionName, string remotePath, IReadOnlyList<FtpRemoteEntry> remoteEntries, string? selectPathAfterLoad = null)
     {
         var normalizedPath = FtpClientSession.NormalizeRemotePath(remotePath);
         if (!_isFtpMode || !string.Equals(CurrentPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
@@ -216,6 +223,13 @@ internal sealed class FilePanel : UserControl
         _spaceLabel.Text = "FTP: " + _ftpConnectionName;
         UpdateStatus(null);
         ScheduleFillColumnsToGridWidth(force: true);
+        if (!string.IsNullOrWhiteSpace(selectPathAfterLoad) && SelectPathCore(selectPathAfterLoad, focusList: false))
+        {
+            PathChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        SelectFirstRow();
         PathChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -377,7 +391,7 @@ internal sealed class FilePanel : UserControl
         _grid.Focus();
         if (_grid.CurrentCell is null && _grid.Rows.Count > 0)
         {
-            _grid.CurrentCell = _grid.Rows[0].Cells[nameof(FileSystemEntry.DisplayName)];
+            SelectFirstRow();
         }
     }
 
@@ -399,6 +413,34 @@ internal sealed class FilePanel : UserControl
         _grid.ClearSelection();
         _grid.Invalidate();
         UpdateStatus(null);
+    }
+
+    private void SelectFirstRow()
+    {
+        if (_grid.Rows.Count > 0)
+        {
+            SelectRow(0);
+        }
+    }
+
+    private void SelectRow(int index)
+    {
+        if (index < 0 || index >= _grid.Rows.Count)
+        {
+            return;
+        }
+
+        _grid.ClearSelection();
+        _grid.CurrentCell = _grid.Rows[index].Cells[nameof(FileSystemEntry.DisplayName)];
+        _grid.Rows[index].Selected = true;
+        try
+        {
+            _grid.FirstDisplayedScrollingRowIndex = index;
+        }
+        catch
+        {
+            // DataGridView can reject scroll changes while it is rebuilding rows.
+        }
     }
 
     public int MarkByPattern(string pattern, bool mark)
@@ -428,7 +470,13 @@ internal sealed class FilePanel : UserControl
 
     public bool SelectPath(string path)
     {
-        var fileName = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        return SelectPathCore(path, focusList: true);
+    }
+
+    private bool SelectPathCore(string path, bool focusList)
+    {
+        var normalizedPath = NormalizeSelectionPath(path);
+        var fileName = GetEntryNameFromPath(normalizedPath);
         if (string.IsNullOrWhiteSpace(fileName))
         {
             return false;
@@ -437,17 +485,45 @@ internal sealed class FilePanel : UserControl
         for (var index = 0; index < _grid.Rows.Count; index++)
         {
             if (_grid.Rows[index].DataBoundItem is FileSystemEntry entry &&
-                string.Equals(entry.Name, fileName, StringComparison.OrdinalIgnoreCase))
+                (string.Equals(NormalizeSelectionPath(entry.FullPath), normalizedPath, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(entry.Name, fileName, StringComparison.OrdinalIgnoreCase)))
             {
-                _grid.ClearSelection();
-                _grid.Rows[index].Selected = true;
-                _grid.CurrentCell = _grid.Rows[index].Cells[nameof(FileSystemEntry.DisplayName)];
-                FocusList();
+                SelectRow(index);
+                if (focusList)
+                {
+                    FocusList();
+                }
+
                 return true;
             }
         }
 
         return false;
+    }
+
+    private static string NormalizeSelectionPath(string path)
+    {
+        var trimmed = path.Trim();
+        if (trimmed.Contains('/', StringComparison.Ordinal))
+        {
+            return trimmed.Replace('\\', '/').TrimEnd('/');
+        }
+
+        try
+        {
+            return Path.GetFullPath(trimmed).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return trimmed.Replace('\\', '/').TrimEnd('/');
+        }
+    }
+
+    private static string GetEntryNameFromPath(string path)
+    {
+        var clean = path.TrimEnd('\\', '/');
+        var separator = Math.Max(clean.LastIndexOf('\\'), clean.LastIndexOf('/'));
+        return separator >= 0 ? clean[(separator + 1)..] : clean;
     }
 
     public void OpenFocusedEntry()
@@ -466,7 +542,15 @@ internal sealed class FilePanel : UserControl
 
         if (entry.IsDirectory)
         {
-            LoadPath(entry.FullPath);
+            if (entry.IsParent)
+            {
+                NavigateUp();
+            }
+            else
+            {
+                LoadPath(entry.FullPath);
+            }
+
             return;
         }
 
@@ -501,7 +585,14 @@ internal sealed class FilePanel : UserControl
 
         if (FocusedEntry is { IsDirectory: true } entry)
         {
-            LoadPath(entry.FullPath);
+            if (entry.IsParent)
+            {
+                NavigateUp();
+            }
+            else
+            {
+                LoadPath(entry.FullPath);
+            }
         }
     }
 
@@ -516,7 +607,8 @@ internal sealed class FilePanel : UserControl
         var parent = Directory.GetParent(CurrentPath);
         if (parent is not null)
         {
-            LoadPath(parent.FullName);
+            var previousPath = CurrentPath;
+            LoadPath(parent.FullName, previousPath);
         }
     }
 
