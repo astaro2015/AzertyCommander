@@ -186,16 +186,7 @@ internal sealed class FilePanel : UserControl
         {
             if (widths.TryGetValue(column.Name, out var width))
             {
-                if (column.Name == nameof(FileSystemEntry.DisplayName) &&
-                    column.AutoSizeMode == DataGridViewAutoSizeColumnMode.Fill)
-                {
-                    column.FillWeight = Math.Clamp(width, 180, 1600);
-                    column.MinimumWidth = Math.Clamp(Math.Min(width, 260), 180, 600);
-                }
-                else
-                {
-                    column.Width = Math.Clamp(width, 24, 1200);
-                }
+                column.Width = Math.Clamp(width, Math.Max(24, column.MinimumWidth), 1200);
             }
         }
     }
@@ -460,7 +451,9 @@ internal sealed class FilePanel : UserControl
         _grid.AutoGenerateColumns = false;
         _grid.AllowUserToAddRows = false;
         _grid.AllowUserToDeleteRows = false;
+        _grid.AllowUserToResizeColumns = true;
         _grid.AllowUserToResizeRows = false;
+        _grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
         _grid.BackgroundColor = SystemColors.Window;
         _grid.BorderStyle = BorderStyle.FixedSingle;
         _grid.CellBorderStyle = DataGridViewCellBorderStyle.None;
@@ -493,6 +486,7 @@ internal sealed class FilePanel : UserControl
             HeaderText = string.Empty,
             Name = IconColumnName,
             Width = 26,
+            Resizable = DataGridViewTriState.False,
             ImageLayout = DataGridViewImageCellLayout.Normal,
             SortMode = DataGridViewColumnSortMode.NotSortable
         });
@@ -501,17 +495,17 @@ internal sealed class FilePanel : UserControl
             DataPropertyName = nameof(FileSystemEntry.DisplayName),
             HeaderText = "Имя",
             Name = nameof(FileSystemEntry.DisplayName),
-            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
             MinimumWidth = 180,
-            FillWeight = 420,
-            Width = 420
+            Width = 420,
+            Resizable = DataGridViewTriState.True
         });
         _grid.Columns.Add(new DataGridViewTextBoxColumn
         {
             DataPropertyName = nameof(FileSystemEntry.TypeText),
             HeaderText = "Тип",
             Name = nameof(FileSystemEntry.TypeText),
-            Width = 76
+            Width = 76,
+            Resizable = DataGridViewTriState.True
         });
         _grid.Columns.Add(new DataGridViewTextBoxColumn
         {
@@ -519,6 +513,7 @@ internal sealed class FilePanel : UserControl
             HeaderText = "Размер",
             Name = nameof(FileSystemEntry.SizeText),
             Width = 96,
+            Resizable = DataGridViewTriState.True,
             DefaultCellStyle = new DataGridViewCellStyle { Alignment = DataGridViewContentAlignment.MiddleRight, Padding = new Padding(0) }
         });
         _grid.Columns.Add(new DataGridViewTextBoxColumn
@@ -526,14 +521,16 @@ internal sealed class FilePanel : UserControl
             DataPropertyName = nameof(FileSystemEntry.DateText),
             HeaderText = "Дата",
             Name = nameof(FileSystemEntry.DateText),
-            Width = 112
+            Width = 112,
+            Resizable = DataGridViewTriState.True
         });
         _grid.Columns.Add(new DataGridViewTextBoxColumn
         {
             DataPropertyName = nameof(FileSystemEntry.AttributesText),
             HeaderText = "Атрибуты",
             Name = nameof(FileSystemEntry.AttributesText),
-            Width = 64
+            Width = 64,
+            Resizable = DataGridViewTriState.True
         });
         _grid.CellDoubleClick += (_, args) =>
         {

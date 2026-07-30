@@ -293,6 +293,17 @@ internal static class SelfTest
                 return false;
             }
 
+            var panelGrid = DescendantControls(panel).OfType<DataGridView>().Single();
+            var nameColumn = panelGrid.Columns[nameof(FileSystemEntry.DisplayName)];
+            if (!panelGrid.AllowUserToResizeColumns ||
+                panelGrid.AutoSizeColumnsMode != DataGridViewAutoSizeColumnsMode.None ||
+                nameColumn.AutoSizeMode != DataGridViewAutoSizeColumnMode.NotSet ||
+                nameColumn.Resizable != DataGridViewTriState.True)
+            {
+                Console.Error.WriteLine("Column resize check failed.");
+                return false;
+            }
+
             Console.WriteLine("OK");
             return true;
         }
