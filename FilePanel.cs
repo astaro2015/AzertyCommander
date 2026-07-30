@@ -16,6 +16,7 @@ internal sealed class FilePanel : UserControl
     private readonly BindingList<FileSystemEntry> _entries = new();
     private readonly HashSet<string> _markedPaths = new(StringComparer.OrdinalIgnoreCase);
     private Point _dragStartPoint;
+    private bool _canStartFileDrag;
     private DateTime _lastRenameClickUtc = DateTime.MinValue;
     private string? _lastRenameClickPath;
     private AppThemeSettings _theme = new();
@@ -707,15 +708,24 @@ internal sealed class FilePanel : UserControl
         _grid.MouseDown += (_, args) =>
         {
             ActivatePanel();
+            _canStartFileDrag = false;
             if (args.Button == MouseButtons.Left)
             {
                 _dragStartPoint = args.Location;
+                var hit = _grid.HitTest(args.X, args.Y);
+                _canStartFileDrag =
+                    hit.RowIndex >= 0 &&
+                    _grid.Rows[hit.RowIndex].DataBoundItem is FileSystemEntry { IsParent: false };
             }
         };
-        _grid.MouseUp += (_, args) => HandleMouseNavigation(args);
+        _grid.MouseUp += (_, args) =>
+        {
+            _canStartFileDrag = false;
+            HandleMouseNavigation(args);
+        };
         _grid.MouseMove += (_, args) =>
         {
-            if ((args.Button & MouseButtons.Left) == 0)
+            if (!_canStartFileDrag || (args.Button & MouseButtons.Left) == 0)
             {
                 return;
             }
