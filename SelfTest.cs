@@ -427,6 +427,28 @@ internal static class SelfTest
                 return false;
             }
 
+            Application.DoEvents();
+            var initialFillTarget = GridFillTargetWidth(panelGrid);
+            var initialColumnsWidth = VisibleColumnWidthSum(panelGrid);
+            if (initialFillTarget > 0 && initialColumnsWidth < initialFillTarget - 6)
+            {
+                Console.Error.WriteLine("Column fill initial width check failed.");
+                return false;
+            }
+
+            var previousNameWidth = nameColumn.Width;
+            host.Size = new Size(1100, 600);
+            Application.DoEvents();
+            Application.DoEvents();
+            var expandedFillTarget = GridFillTargetWidth(panelGrid);
+            var expandedColumnsWidth = VisibleColumnWidthSum(panelGrid);
+            if (expandedFillTarget > initialFillTarget + 50 &&
+                (expandedColumnsWidth < expandedFillTarget - 6 || nameColumn.Width <= previousNameWidth))
+            {
+                Console.Error.WriteLine("Column proportional resize check failed.");
+                return false;
+            }
+
             Console.WriteLine("OK");
             return true;
         }
@@ -481,6 +503,25 @@ internal static class SelfTest
         }
 
         task.GetAwaiter().GetResult();
+    }
+
+    private static int VisibleColumnWidthSum(DataGridView grid)
+    {
+        return grid.Columns
+            .Cast<DataGridViewColumn>()
+            .Where(column => column.Visible)
+            .Sum(column => column.Width);
+    }
+
+    private static int GridFillTargetWidth(DataGridView grid)
+    {
+        var width = grid.ClientSize.Width;
+        if (grid.Controls.OfType<VScrollBar>().Any(scrollBar => scrollBar.Visible))
+        {
+            width -= SystemInformation.VerticalScrollBarWidth;
+        }
+
+        return Math.Max(0, width - 2);
     }
 
     private static bool ExecutableIconLooksBlue()

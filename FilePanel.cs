@@ -33,6 +33,8 @@ internal sealed class FilePanel : UserControl
     private Color _activePathBackgroundColor = Color.FromArgb(232, 246, 255);
     private bool _isActivePanel;
     private bool _loadingDrives;
+    private bool _fillingColumnWidths;
+    private int _lastColumnFillWidth;
     private string _sortColumn = nameof(FileSystemEntry.DisplayName);
     private bool _sortAscending = true;
     private const string IconColumnName = "IconColumn";
@@ -175,6 +177,7 @@ internal sealed class FilePanel : UserControl
 
     public Dictionary<string, int> GetColumnWidths()
     {
+        FillColumnsToGridWidth(force: true);
         return _grid.Columns
             .Cast<DataGridViewColumn>()
             .Where(column => column.Visible)
@@ -185,6 +188,7 @@ internal sealed class FilePanel : UserControl
     {
         if (widths is null || widths.Count == 0)
         {
+            ScheduleFillColumnsToGridWidth(force: true);
             return;
         }
 
@@ -195,6 +199,8 @@ internal sealed class FilePanel : UserControl
                 column.Width = Math.Clamp(width, Math.Max(24, column.MinimumWidth), 1200);
             }
         }
+
+        ScheduleFillColumnsToGridWidth(force: true);
     }
 
     public void RefreshList()
@@ -247,6 +253,7 @@ internal sealed class FilePanel : UserControl
         UpdateDriveSelection();
         UpdateSpaceLabel();
         UpdateStatus(errors.Count == 0 ? null : "Часть элементов не прочитана: " + errors[0]);
+        ScheduleFillColumnsToGridWidth(force: true);
 
         PathChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -467,6 +474,161 @@ internal sealed class FilePanel : UserControl
         _grid.DefaultCellStyle.SelectionForeColor = _isActivePanel ? _selectedTextColor : _fileTextColor;
     }
 
+    private void ScheduleFillColumnsToGridWidth(bool force)
+    {
+        if (_fillingColumnWidths)
+        {
+            return;
+        }
+
+        if (!IsHandleCreated || IsDisposed || Disposing)
+        {
+            FillColumnsToGridWidth(force);
+            return;
+        }
+
+        try
+        {
+            BeginInvoke((Action)(() => FillColumnsToGridWidth(force)));
+        }
+        catch
+        {
+            FillColumnsToGridWidth(force);
+        }
+    }
+
+    private void FillColumnsToGridWidth(bool force)
+    {
+        if (_fillingColumnWidths || _grid.Columns.Count == 0)
+        {
+            return;
+        }
+
+        var targetWidth = GetColumnFillWidth();
+        if (targetWidth <= 0 || (!force && targetWidth == _lastColumnFillWidth))
+        {
+            return;
+        }
+
+        var visibleColumns = _grid.Columns
+            .Cast<DataGridViewColumn>()
+            .Where(column => column.Visible)
+            .ToList();
+        var scalableColumns = visibleColumns
+            .Where(column => column.Resizable != DataGridViewTriState.False && column.Name != IconColumnName)
+            .ToList();
+        if (scalableColumns.Count == 0)
+        {
+            return;
+        }
+
+        var fixedWidth = visibleColumns.Except(scalableColumns).Sum(column => column.Width);
+        var scalableTargetWidth = targetWidth - fixedWidth;
+        var minimumScalableWidth = scalableColumns.Sum(GetColumnMinimumWidth);
+        if (scalableTargetWidth < minimumScalableWidth)
+        {
+            scalableTargetWidth = minimumScalableWidth;
+        }
+
+        var currentScalableWidth = scalableColumns.Sum(column => column.Width);
+        if (currentScalableWidth <= 0)
+        {
+            return;
+        }
+
+        var scaledWidths = ScaleColumnWidths(scalableColumns, scalableTargetWidth);
+        _fillingColumnWidths = true;
+        try
+        {
+            for (var index = 0; index < scalableColumns.Count; index++)
+            {
+                scalableColumns[index].Width = scaledWidths[index];
+            }
+
+            _lastColumnFillWidth = targetWidth;
+        }
+        finally
+        {
+            _fillingColumnWidths = false;
+        }
+    }
+
+    private int GetColumnFillWidth()
+    {
+        var width = _grid.ClientSize.Width;
+        if (width <= 0)
+        {
+            width = _grid.Width;
+        }
+
+        if (IsVerticalScrollBarVisible())
+        {
+            width -= SystemInformation.VerticalScrollBarWidth;
+        }
+
+        return Math.Max(0, width - 2);
+    }
+
+    private bool IsVerticalScrollBarVisible()
+    {
+        return _grid.Controls.OfType<VScrollBar>().Any(scrollBar => scrollBar.Visible);
+    }
+
+    private static int[] ScaleColumnWidths(IReadOnlyList<DataGridViewColumn> columns, int targetWidth)
+    {
+        var widths = new int[columns.Count];
+        var totalSourceWidth = columns.Sum(column => Math.Max(1, column.Width));
+        var assigned = 0;
+
+        for (var index = 0; index < columns.Count; index++)
+        {
+            var minimum = GetColumnMinimumWidth(columns[index]);
+            var width = index == columns.Count - 1
+                ? targetWidth - assigned
+                : (int)Math.Round(columns[index].Width * targetWidth / (double)totalSourceWidth);
+            widths[index] = Math.Max(minimum, width);
+            assigned += widths[index];
+        }
+
+        BalanceScaledColumnWidths(columns, widths, targetWidth);
+        return widths;
+    }
+
+    private static void BalanceScaledColumnWidths(IReadOnlyList<DataGridViewColumn> columns, int[] widths, int targetWidth)
+    {
+        var delta = targetWidth - widths.Sum();
+        while (delta != 0)
+        {
+            var changed = false;
+            for (var index = 0; index < widths.Length && delta != 0; index++)
+            {
+                var minimum = GetColumnMinimumWidth(columns[index]);
+                if (delta > 0)
+                {
+                    widths[index]++;
+                    delta--;
+                    changed = true;
+                }
+                else if (widths[index] > minimum)
+                {
+                    widths[index]--;
+                    delta++;
+                    changed = true;
+                }
+            }
+
+            if (!changed)
+            {
+                break;
+            }
+        }
+    }
+
+    private static int GetColumnMinimumWidth(DataGridViewColumn column)
+    {
+        return Math.Max(24, column.MinimumWidth);
+    }
+
     private void ToggleEntrySelection(FileSystemEntry entry)
     {
         if (!_markedPaths.Add(entry.FullPath))
@@ -648,6 +810,7 @@ internal sealed class FilePanel : UserControl
             Width = 64,
             Resizable = DataGridViewTriState.True
         });
+        _grid.SizeChanged += (_, _) => ScheduleFillColumnsToGridWidth(force: false);
         _grid.CellDoubleClick += (_, args) =>
         {
             ResetSlowRenameClick();
