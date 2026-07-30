@@ -5,11 +5,11 @@ internal static class BuildInfo
     public const int Major = 0;
     public const int Minor = 1;
     public const int Patch = 0;
-    public const int Build = 97;
-    public const string Version = "0.1.0.97";
-    public const string InformationalVersion = "0.1.0+build.97";
-    public const string BuildTimeLocal = "2026-07-30 11:38:35 +03:00";
-    public const string BuildTimeUtc = "2026-07-30 08:38:35 UTC";
+    public const int Build = 99;
+    public const string Version = "0.1.0.99";
+    public const string InformationalVersion = "0.1.0+build.99";
+    public const string BuildTimeLocal = "2026-07-30 11:46:55 +03:00";
+    public const string BuildTimeUtc = "2026-07-30 08:46:55 UTC";
     public const string Configuration = "Release";
     public const string RuntimeIdentifier = "";
     public const string SelfContained = "false";

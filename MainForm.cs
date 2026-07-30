@@ -167,7 +167,7 @@ internal sealed class MainForm : Form
         selection.DropDownItems.Add(CreateMenuItem("Добавить выделение...\tNum+", (_, _) => ShowSelectionMaskDialog(true)));
         selection.DropDownItems.Add(CreateMenuItem("Убрать выделение...\tNum-", (_, _) => ShowSelectionMaskDialog(false)));
         selection.DropDownItems.Add(new ToolStripSeparator());
-        selection.DropDownItems.Add(CreateMenuItem("Выделить всё\tCtrl+A", (_, _) => _activePanel.SelectAllItems()));
+        selection.DropDownItems.Add(CreateMenuItem("Выделить всё\tCtrl+A / Num*", (_, _) => _activePanel.SelectAllItems()));
         selection.DropDownItems.Add(CreateMenuItem("Снять выделение", (_, _) => _activePanel.ClearSelection()));
 
         var commands = new ToolStripMenuItem("Команды");
@@ -375,6 +375,9 @@ internal sealed class MainForm : Form
                 return true;
             case Keys.Subtract:
                 ShowSelectionMaskDialog(false);
+                return true;
+            case Keys.Multiply:
+                _activePanel.SelectAllItems();
                 return true;
             case Keys.BrowserBack:
                 _activePanel.NavigateUp();
@@ -1630,7 +1633,7 @@ internal sealed class MainForm : Form
     {
         MessageBox.Show(
             this,
-            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nTab переключить панель\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nNum+ добавить выделение по маске\nNum- убрать выделение по маске\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+D избранные каталоги\nCtrl+F поиск\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: Ctrl копировать, Shift перемещать\nFTP: клиент и встроенный сервер без TLS",
+            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nTab переключить панель\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nNum+ добавить выделение по маске\nNum- убрать выделение по маске\nNum* выделить всё\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+D избранные каталоги\nCtrl+F поиск\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: обычный бросок копирует, Shift перемещает\nFTP: клиент и встроенный сервер без TLS",
             "О программе",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
