@@ -26,8 +26,8 @@ internal sealed class AppThemeSettings
     public string FolderTextColor { get; set; } = "#000000";
     public string MarkedTextColor { get; set; } = "#FF0000";
     public string ListBackgroundColor { get; set; } = "#FFFFFF";
-    public string SelectedBackgroundColor { get; set; } = "#0078D7";
-    public string SelectedTextColor { get; set; } = "#FFFFFF";
+    public string SelectedBackgroundColor { get; set; } = "#5AB9F0";
+    public string SelectedTextColor { get; set; } = "#000000";
     public string ActivePanelBackgroundColor { get; set; } = "#D4E8F7";
     public string ActivePathBackgroundColor { get; set; } = "#E8F6FF";
 

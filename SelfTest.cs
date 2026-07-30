@@ -208,6 +208,14 @@ internal static class SelfTest
                 return false;
             }
 
+            var defaultTheme = new AppThemeSettings();
+            if (!string.Equals(defaultTheme.SelectedBackgroundColor, "#5AB9F0", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(defaultTheme.SelectedTextColor, "#000000", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine("Selection color defaults check failed.");
+                return false;
+            }
+
             var toolbarTips = DescendantControls(form)
                 .OfType<ToolStrip>()
                 .SelectMany(toolStrip => toolStrip.Items.OfType<ToolStripButton>())
@@ -224,6 +232,23 @@ internal static class SelfTest
                 Console.Error.WriteLine("Executable icon color check failed.");
                 return false;
             }
+
+            form.ShowInTaskbar = false;
+            form.StartPosition = FormStartPosition.Manual;
+            form.Location = new Point(-32000, -32000);
+            form.Show();
+            Application.DoEvents();
+            var mainFavoritesButton = DescendantControls(form).OfType<Button>().FirstOrDefault(button => button.Text == "*");
+            if (mainFavoritesButton is null)
+            {
+                Console.Error.WriteLine("Main favorite directories button check failed.");
+                return false;
+            }
+
+            mainFavoritesButton.PerformClick();
+            Application.DoEvents();
+            mainFavoritesButton.PerformClick();
+            Application.DoEvents();
 
             using var settingsForm = new SettingsForm(new AppThemeSettings());
             if (settingsForm.Text != "Настройки")

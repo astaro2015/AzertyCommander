@@ -13,6 +13,7 @@ internal sealed class MainForm : Form
     private readonly SplitContainer _splitContainer = new();
     private readonly ToolStrip _quickLaunchToolbar = new();
     private readonly List<QuickLaunchEntry> _quickLaunchEntries = QuickLaunchStore.Load();
+    private ContextMenuStrip? _favoriteDirectoriesMenu;
     private FilePanel _activePanel;
     private bool _centeringSplitter;
     private bool _splitterMovedByUser;
@@ -594,8 +595,23 @@ internal sealed class MainForm : Form
     {
         SetActivePanel(panel);
 
+        if (_favoriteDirectoriesMenu is { IsDisposed: false } existingMenu)
+        {
+            existingMenu.Close(ToolStripDropDownCloseReason.CloseCalled);
+            return;
+        }
+
         var menu = new ContextMenuStrip();
-        menu.Closed += (_, _) => menu.Dispose();
+        _favoriteDirectoriesMenu = menu;
+        menu.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_favoriteDirectoriesMenu, menu))
+            {
+                _favoriteDirectoriesMenu = null;
+            }
+
+            DisposeFavoriteMenuLater(menu);
+        };
 
         var favorites = _settings.FavoriteDirectories.ToList();
         var existingFavorites = favorites.Where(Directory.Exists).ToList();
@@ -658,6 +674,38 @@ internal sealed class MainForm : Form
         }
 
         menu.Show(screenLocation);
+    }
+
+    private void DisposeFavoriteMenuLater(ContextMenuStrip menu)
+    {
+        if (menu.IsDisposed)
+        {
+            return;
+        }
+
+        if (!IsHandleCreated || IsDisposed || Disposing)
+        {
+            menu.Dispose();
+            return;
+        }
+
+        try
+        {
+            BeginInvoke((Action)(() =>
+            {
+                if (!menu.IsDisposed)
+                {
+                    menu.Dispose();
+                }
+            }));
+        }
+        catch
+        {
+            if (!menu.IsDisposed)
+            {
+                menu.Dispose();
+            }
+        }
     }
 
     private void AddFavoriteDirectory(string path)

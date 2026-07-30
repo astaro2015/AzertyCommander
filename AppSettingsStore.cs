@@ -39,6 +39,16 @@ internal static class AppSettingsStore
             settings.Theme.RowHeight = AppThemeSettings.DefaultRowHeight;
         }
 
+        if (string.Equals(settings.Theme.SelectedBackgroundColor, "#0078D7", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.Theme.SelectedBackgroundColor = "#5AB9F0";
+        }
+
+        if (string.Equals(settings.Theme.SelectedTextColor, "#FFFFFF", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.Theme.SelectedTextColor = "#000000";
+        }
+
         settings.Theme.RowHeight = Math.Clamp(settings.Theme.RowHeight, 24, 96);
         settings.FavoriteDirectories ??= new List<string>();
         settings.FavoriteDirectories = settings.FavoriteDirectories
