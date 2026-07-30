@@ -6,17 +6,21 @@ internal sealed class AppSettings
     public AppWindowSettings Window { get; set; } = new();
     public AppPanelSettings LeftPanel { get; set; } = new();
     public AppPanelSettings RightPanel { get; set; } = new();
+    public List<FtpConnectionProfile> FtpConnections { get; set; } = new();
+    public List<string> FtpConnectionGroups { get; set; } = new();
 }
 
 internal sealed class AppThemeSettings
 {
+    public const int DefaultRowHeight = 30;
+
     public string FileFontFamily { get; set; } = "Segoe UI";
     public float FileFontSize { get; set; } = 9.75F;
     public int FileFontStyle { get; set; } = (int)FontStyle.Regular;
     public string FolderFontFamily { get; set; } = "Segoe UI";
     public float FolderFontSize { get; set; } = 9.75F;
     public int FolderFontStyle { get; set; } = (int)FontStyle.Regular;
-    public int RowHeight { get; set; } = 30;
+    public int RowHeight { get; set; } = DefaultRowHeight;
     public string FileTextColor { get; set; } = "#000000";
     public string FolderTextColor { get; set; } = "#000000";
     public string MarkedTextColor { get; set; } = "#FF0000";

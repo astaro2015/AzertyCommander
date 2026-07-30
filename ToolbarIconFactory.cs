@@ -62,6 +62,17 @@ internal static class ToolbarIconFactory
         g.DrawLine(pen, 13, 13, 20, 20);
     });
 
+    public static Image Compare() => Create(Color.FromArgb(47, 154, 205), (g, pen, brush) =>
+    {
+        g.DrawRectangle(pen, 4, 4, 7, 16);
+        g.DrawRectangle(pen, 13, 4, 7, 16);
+        g.DrawLine(pen, 6, 9, 9, 9);
+        g.DrawLine(pen, 15, 9, 18, 9);
+        g.DrawLine(pen, 6, 14, 9, 14);
+        g.DrawLine(pen, 15, 14, 18, 14);
+        g.FillEllipse(brush, 10, 11, 4, 4);
+    });
+
     public static Image ZipPack() => Create(Color.FromArgb(90, 126, 63), (g, pen, brush) =>
     {
         g.DrawRectangle(pen, 6, 3, 12, 18);

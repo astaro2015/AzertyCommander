@@ -7,11 +7,8 @@ internal sealed class FtpClientForm : Form
     private readonly Func<string> _getLocalDirectory;
     private readonly Action _refreshLocalPanels;
     private readonly BindingList<FtpRemoteEntry> _entries = new();
-    private readonly TextBox _hostBox = new();
-    private readonly NumericUpDown _portBox = new();
-    private readonly CheckBox _anonymousBox = new();
-    private readonly TextBox _userBox = new();
-    private readonly TextBox _passwordBox = new();
+    private readonly FtpConnectionProfile _profile;
+    private readonly Label _connectionLabel = new();
     private readonly Button _connectButton = new();
     private readonly Button _disconnectButton = new();
     private readonly TextBox _pathBox = new();
@@ -21,8 +18,9 @@ internal sealed class FtpClientForm : Form
     private FtpClientSession? _session;
     private bool _busy;
 
-    public FtpClientForm(Func<string> getLocalDirectory, Action refreshLocalPanels)
+    public FtpClientForm(FtpConnectionProfile profile, Func<string> getLocalDirectory, Action refreshLocalPanels)
     {
+        _profile = profile.Clone();
         _getLocalDirectory = getLocalDirectory;
         _refreshLocalPanels = refreshLocalPanels;
         BuildUi();
@@ -36,9 +34,18 @@ internal sealed class FtpClientForm : Form
         base.OnFormClosing(e);
     }
 
+    protected override async void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        if (_session is null)
+        {
+            await ConnectAsync();
+        }
+    }
+
     private void BuildUi()
     {
-        Text = "FTP подключение";
+        Text = "FTP: " + _profile.Name;
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(940, 620);
         ClientSize = new Size(1040, 680);
@@ -52,8 +59,8 @@ internal sealed class FtpClientForm : Form
             RowCount = 6,
             Padding = new Padding(8)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
@@ -62,70 +69,39 @@ internal sealed class FtpClientForm : Form
         var connection = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 10,
+            ColumnCount = 4,
             RowCount = 2
         };
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
         connection.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46));
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
-        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 128));
+        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 128));
+        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
 
-        connection.Controls.Add(CreateLabel("Адрес:"), 0, 0);
-        _hostBox.Text = "127.0.0.1";
-        _hostBox.Dock = DockStyle.Fill;
-        tips.SetToolTip(_hostBox, "Адрес без ftp://. Например: 192.168.1.20 или ftp.example.com");
-        connection.Controls.Add(_hostBox, 1, 0);
-
-        connection.Controls.Add(CreateLabel("Порт:"), 2, 0);
-        _portBox.Minimum = 1;
-        _portBox.Maximum = 65535;
-        _portBox.Value = 2121;
-        _portBox.Dock = DockStyle.Fill;
-        tips.SetToolTip(_portBox, "Обычно 21. Встроенный AZERTY FTP сервер по умолчанию запускается на 2121.");
-        connection.Controls.Add(_portBox, 3, 0);
-
-        _anonymousBox.Text = "Анонимно";
-        _anonymousBox.Checked = true;
-        _anonymousBox.Dock = DockStyle.Fill;
-        _anonymousBox.CheckedChanged += (_, _) => UpdateConnectionFields();
-        tips.SetToolTip(_anonymousBox, "Для быстрых локальных серверов часто достаточно anonymous/guest@.");
-        connection.Controls.Add(_anonymousBox, 4, 0);
-
-        connection.Controls.Add(CreateLabel("Логин:"), 5, 0);
-        _userBox.Text = "anonymous";
-        _userBox.Dock = DockStyle.Fill;
-        connection.Controls.Add(_userBox, 6, 0);
-
-        connection.Controls.Add(CreateLabel("Пароль:"), 7, 0);
-        _passwordBox.Text = "guest@";
-        _passwordBox.UseSystemPasswordChar = true;
-        _passwordBox.Dock = DockStyle.Fill;
-        connection.Controls.Add(_passwordBox, 8, 0);
+        connection.Controls.Add(CreateLabel("Подключение:"), 0, 0);
+        _connectionLabel.Dock = DockStyle.Fill;
+        _connectionLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _connectionLabel.AutoEllipsis = true;
+        connection.Controls.Add(_connectionLabel, 1, 0);
 
         _connectButton.Text = "Соединиться";
         _connectButton.Dock = DockStyle.Fill;
+        _connectButton.Margin = new Padding(4, 0, 4, 4);
         _connectButton.Click += async (_, _) => await ConnectAsync();
-        connection.Controls.Add(_connectButton, 9, 0);
+        connection.Controls.Add(_connectButton, 2, 0);
+
+        _disconnectButton.Text = "Отключиться";
+        _disconnectButton.Dock = DockStyle.Fill;
+        _disconnectButton.Margin = new Padding(4, 0, 0, 4);
+        _disconnectButton.Click += (_, _) => Disconnect();
+        connection.Controls.Add(_disconnectButton, 3, 0);
 
         _localPathLabel.Dock = DockStyle.Fill;
         _localPathLabel.TextAlign = ContentAlignment.MiddleLeft;
         _localPathLabel.AutoEllipsis = true;
-        connection.SetColumnSpan(_localPathLabel, 8);
+        connection.SetColumnSpan(_localPathLabel, 4);
         connection.Controls.Add(_localPathLabel, 0, 1);
-
-        _disconnectButton.Text = "Отключиться";
-        _disconnectButton.Dock = DockStyle.Fill;
-        _disconnectButton.Click += (_, _) => Disconnect();
-        connection.SetColumnSpan(_disconnectButton, 2);
-        connection.Controls.Add(_disconnectButton, 8, 1);
 
         root.Controls.Add(connection, 0, 0);
 
@@ -134,7 +110,7 @@ internal sealed class FtpClientForm : Form
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true,
-            Text = "Подсказка: скачивание идет в активную локальную панель главного окна. Закачка берёт файлы с диска и кладёт их в текущую FTP-папку. Обычный FTP не шифрует пароль."
+            Text = "Подсказка: скачивание идет в локальный каталог профиля, а если он пустой - в активную панель. Обычный FTP не шифрует пароль."
         };
         root.Controls.Add(hint, 0, 1);
 
@@ -232,11 +208,17 @@ internal sealed class FtpClientForm : Form
             _session = new FtpClientSession();
             await _session.ConnectAsync(new FtpConnectionOptions
             {
-                Host = _hostBox.Text.Trim(),
-                Port = (int)_portBox.Value,
-                UserName = _anonymousBox.Checked ? "anonymous" : _userBox.Text.Trim(),
-                Password = _anonymousBox.Checked ? "guest@" : _passwordBox.Text
+                Host = _profile.Host.Trim(),
+                Port = _profile.Port,
+                UserName = _profile.Anonymous ? "anonymous" : _profile.UserName.Trim(),
+                Password = _profile.Anonymous ? "guest@" : _profile.Password
             }, token);
+
+            if (!string.IsNullOrWhiteSpace(_profile.RemoteDirectory) && _profile.RemoteDirectory.Trim() != "/")
+            {
+                await _session.ChangeDirectoryAsync(_profile.RemoteDirectory.Trim(), token);
+            }
+
             await LoadRemoteListAsync(token);
             _statusLabel.Text = "Подключено.";
         });
@@ -317,7 +299,7 @@ internal sealed class FtpClientForm : Form
         }
 
         _pathBox.Text = _session.CurrentDirectory;
-        _localPathLabel.Text = "Активная локальная папка главного окна: " + _getLocalDirectory();
+        _localPathLabel.Text = "Локальная папка: " + CurrentLocalDirectory();
         _statusLabel.Text = $"FTP: {_entries.Count(entry => !entry.IsParent)} элемент(ов).";
     }
 
@@ -330,7 +312,7 @@ internal sealed class FtpClientForm : Form
             return;
         }
 
-        var localDirectory = _getLocalDirectory();
+        var localDirectory = CurrentLocalDirectory();
         if (!Directory.Exists(localDirectory))
         {
             MessageBox.Show(this, "Активная локальная папка не найдена.", "Скачать", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -388,7 +370,7 @@ internal sealed class FtpClientForm : Form
             Title = "Закачать файлы на FTP",
             Filter = "Все файлы (*.*)|*.*",
             Multiselect = true,
-            InitialDirectory = Directory.Exists(_getLocalDirectory()) ? _getLocalDirectory() : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+            InitialDirectory = Directory.Exists(CurrentLocalDirectory()) ? CurrentLocalDirectory() : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
         };
 
         if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -419,7 +401,7 @@ internal sealed class FtpClientForm : Form
         using var dialog = new FolderBrowserDialog
         {
             Description = "Выберите папку для закачки на FTP",
-            SelectedPath = Directory.Exists(_getLocalDirectory()) ? _getLocalDirectory() : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            SelectedPath = Directory.Exists(CurrentLocalDirectory()) ? CurrentLocalDirectory() : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             UseDescriptionForTitle = true
         };
 
@@ -629,15 +611,21 @@ internal sealed class FtpClientForm : Form
 
     private void UpdateConnectionFields()
     {
-        if (_anonymousBox.Checked)
+        var userText = _profile.Anonymous
+            ? "anonymous"
+            : string.IsNullOrWhiteSpace(_profile.UserName) ? "(без имени)" : _profile.UserName.Trim();
+        _connectionLabel.Text = $"{_profile.Name}   {_profile.Host}:{_profile.Port}   {userText}";
+        _localPathLabel.Text = "Локальная папка: " + CurrentLocalDirectory();
+    }
+
+    private string CurrentLocalDirectory()
+    {
+        if (!string.IsNullOrWhiteSpace(_profile.LocalDirectory) && Directory.Exists(_profile.LocalDirectory))
         {
-            _userBox.Text = "anonymous";
-            _passwordBox.Text = "guest@";
+            return _profile.LocalDirectory;
         }
 
-        _userBox.Enabled = !_anonymousBox.Checked;
-        _passwordBox.Enabled = !_anonymousBox.Checked;
-        _localPathLabel.Text = "Активная локальная папка главного окна: " + _getLocalDirectory();
+        return _getLocalDirectory();
     }
 
     private void UpdateButtons()
@@ -645,11 +633,6 @@ internal sealed class FtpClientForm : Form
         var connected = _session?.Connected == true;
         _connectButton.Enabled = !_busy && !connected;
         _disconnectButton.Enabled = !_busy && connected;
-        _hostBox.Enabled = !_busy && !connected;
-        _portBox.Enabled = !_busy && !connected;
-        _anonymousBox.Enabled = !_busy && !connected;
-        _userBox.Enabled = !_busy && !connected && !_anonymousBox.Checked;
-        _passwordBox.Enabled = !_busy && !connected && !_anonymousBox.Checked;
         _pathBox.Enabled = !_busy && connected;
         _grid.Enabled = !_busy && connected;
     }

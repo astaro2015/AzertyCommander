@@ -1,9 +1,19 @@
 using System.IO.Compression;
+using System.Text;
 
 namespace AzertyCommander;
 
 internal static class FileOperations
 {
+    private const int CompareBufferSize = 1024 * 1024;
+    private static readonly Encoding[] ZipNameEncodings =
+    [
+        Encoding.UTF8,
+        Encoding.GetEncoding(866),
+        Encoding.GetEncoding(1251),
+        Encoding.GetEncoding(437)
+    ];
+
     public static Task CopyAsync(IReadOnlyList<FileSystemEntry> entries, string targetDirectory, IProgress<OperationProgress> progress, CancellationToken token)
     {
         return Task.Run(() =>
@@ -24,6 +34,69 @@ internal static class FileOperations
                     CopyFile(entry.FullPath, destination, progress, token, ref current, total);
                 }
             }
+        }, token);
+    }
+
+    public static Task<FileCompareResult> CompareFilesByBytesAsync(string leftPath, string rightPath, IProgress<OperationProgress> progress, CancellationToken token)
+    {
+        return Task.Run(() =>
+        {
+            var leftInfo = new FileInfo(leftPath);
+            var rightInfo = new FileInfo(rightPath);
+            if (!leftInfo.Exists)
+            {
+                throw new FileNotFoundException("Левый файл не найден.", leftPath);
+            }
+
+            if (!rightInfo.Exists)
+            {
+                throw new FileNotFoundException("Правый файл не найден.", rightPath);
+            }
+
+            if (leftInfo.Length != rightInfo.Length)
+            {
+                progress.Report(new OperationProgress(1, 1, "Размеры файлов отличаются."));
+                return new FileCompareResult(false, leftInfo.Length, rightInfo.Length, null);
+            }
+
+            if (leftInfo.Length == 0)
+            {
+                progress.Report(new OperationProgress(1, 1, "Пустые файлы одинаковы."));
+                return new FileCompareResult(true, 0, 0, null);
+            }
+
+            var leftBuffer = new byte[CompareBufferSize];
+            var rightBuffer = new byte[CompareBufferSize];
+            var processed = 0L;
+
+            using var leftStream = new FileStream(leftPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, CompareBufferSize, FileOptions.SequentialScan);
+            using var rightStream = new FileStream(rightPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, CompareBufferSize, FileOptions.SequentialScan);
+
+            while (processed < leftInfo.Length)
+            {
+                token.ThrowIfCancellationRequested();
+                var leftRead = ReadBlock(leftStream, leftBuffer, token);
+                var rightRead = ReadBlock(rightStream, rightBuffer, token);
+
+                if (leftRead != rightRead)
+                {
+                    return new FileCompareResult(false, leftInfo.Length, rightInfo.Length, processed);
+                }
+
+                for (var index = 0; index < leftRead; index++)
+                {
+                    if (leftBuffer[index] != rightBuffer[index])
+                    {
+                        return new FileCompareResult(false, leftInfo.Length, rightInfo.Length, processed + index);
+                    }
+                }
+
+                processed += leftRead;
+                var progressValue = (int)Math.Clamp(processed * 1000 / leftInfo.Length, 0, 1000);
+                progress.Report(new OperationProgress(progressValue, 1000, $"Сравнение: {FormatBytes(processed)} из {FormatBytes(leftInfo.Length)}"));
+            }
+
+            return new FileCompareResult(true, leftInfo.Length, rightInfo.Length, null);
         }, token);
     }
 
@@ -63,7 +136,8 @@ internal static class FileOperations
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(zipPath) ?? ".");
-            using var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create);
+            using var zipStream = new FileStream(zipPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            using var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, false, Encoding.UTF8);
             var zipFullPath = Path.GetFullPath(zipPath);
 
             foreach (var entry in entries)
@@ -96,7 +170,7 @@ internal static class FileOperations
                     : Path.Combine(targetDirectory, Path.GetFileNameWithoutExtension(zipPath));
                 Directory.CreateDirectory(destinationRoot);
 
-                using var archive = ZipFile.OpenRead(zipPath);
+                using var archive = OpenZipRead(zipPath);
                 foreach (var entry in archive.Entries)
                 {
                     token.ThrowIfCancellationRequested();
@@ -310,11 +384,115 @@ internal static class FileOperations
         var count = 0;
         foreach (var zipPath in zipPaths)
         {
-            using var archive = ZipFile.OpenRead(zipPath);
+            using var archive = OpenZipRead(zipPath);
             count += Math.Max(1, archive.Entries.Count);
         }
 
         return count;
+    }
+
+    private static ZipArchive OpenZipRead(string zipPath)
+    {
+        var encoding = DetectZipEntryNameEncoding(zipPath);
+        var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            return new ZipArchive(stream, ZipArchiveMode.Read, false, encoding);
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
+    private static Encoding DetectZipEntryNameEncoding(string zipPath)
+    {
+        var bestEncoding = Encoding.UTF8;
+        var bestScore = int.MinValue;
+
+        foreach (var encoding in ZipNameEncodings)
+        {
+            try
+            {
+                using var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var archive = new ZipArchive(stream, ZipArchiveMode.Read, false, encoding);
+                var score = ScoreZipEntryNames(archive.Entries.Select(entry => entry.FullName));
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestEncoding = encoding;
+                }
+            }
+            catch
+            {
+                // Try the next legacy encoding candidate.
+            }
+        }
+
+        return bestEncoding;
+    }
+
+    private static int ScoreZipEntryNames(IEnumerable<string> names)
+    {
+        var score = 0;
+        foreach (var name in names)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                score -= 100;
+                continue;
+            }
+
+            foreach (var ch in name)
+            {
+                if (ch == '\uFFFD')
+                {
+                    score -= 100;
+                }
+                else if (IsCommonCyrillic(ch))
+                {
+                    score += 10;
+                }
+                else if (IsRareCyrillicMojibake(ch) || IsBoxDrawing(ch))
+                {
+                    score -= 20;
+                }
+                else if (char.IsControl(ch))
+                {
+                    score -= 50;
+                }
+                else if (ch is '<' or '>' or ':' or '"' or '|' or '?' or '*')
+                {
+                    score -= 15;
+                }
+                else if (ch is '«' or '»' or '¤' or '¦' or '¬' or '°' or '±')
+                {
+                    score -= 6;
+                }
+                else if (ch < 128)
+                {
+                    score += 1;
+                }
+            }
+        }
+
+        return score;
+    }
+
+    private static bool IsCommonCyrillic(char ch)
+    {
+        return ch is >= 'А' and <= 'я' or 'Ё' or 'ё';
+    }
+
+    private static bool IsRareCyrillicMojibake(char ch)
+    {
+        return "ЉЊЃѓЄєЅѕІіЇїЈјЌќЎўЏџҐґ".Contains(ch);
+    }
+
+    private static bool IsBoxDrawing(char ch)
+    {
+        return ch is >= '\u2500' and <= '\u257F';
     }
 
     private static IEnumerable<string> SafeFiles(string directory)
@@ -344,6 +522,38 @@ internal static class FileOperations
     private static string NormalizeZipName(string path)
     {
         return path.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
+    }
+
+    private static int ReadBlock(Stream stream, byte[] buffer, CancellationToken token)
+    {
+        var offset = 0;
+        while (offset < buffer.Length)
+        {
+            token.ThrowIfCancellationRequested();
+            var read = stream.Read(buffer, offset, buffer.Length - offset);
+            if (read == 0)
+            {
+                break;
+            }
+
+            offset += read;
+        }
+
+        return offset;
+    }
+
+    private static string FormatBytes(long value)
+    {
+        string[] units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+        var size = (double)value;
+        var unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+
+        return unit == 0 ? $"{value:N0} {units[unit]}" : $"{size:N1} {units[unit]}";
     }
 
     private static bool IsSamePath(string first, string second)

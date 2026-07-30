@@ -15,8 +15,9 @@ internal static class AppSettingsStore
                 return new AppSettings();
             }
 
-            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(AppPaths.SettingsPath), JsonOptions);
-            return settings ?? new AppSettings();
+            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(AppPaths.SettingsPath), JsonOptions) ?? new AppSettings();
+            Normalize(settings);
+            return settings;
         }
         catch
         {
@@ -26,7 +27,18 @@ internal static class AppSettingsStore
 
     public static void Save(AppSettings settings)
     {
+        Normalize(settings);
         Directory.CreateDirectory(AppPaths.ConfigDirectory);
         File.WriteAllText(AppPaths.SettingsPath, JsonSerializer.Serialize(settings, JsonOptions));
+    }
+
+    private static void Normalize(AppSettings settings)
+    {
+        if (settings.Theme.RowHeight == 36)
+        {
+            settings.Theme.RowHeight = AppThemeSettings.DefaultRowHeight;
+        }
+
+        settings.Theme.RowHeight = Math.Clamp(settings.Theme.RowHeight, 24, 96);
     }
 }

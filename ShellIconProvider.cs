@@ -14,16 +14,23 @@ internal static class ShellIconProvider
 
     public static Image GetSmallIcon(string path, bool isDirectory, bool isParent)
     {
-        var key = isParent || isDirectory ? "folder" : Path.GetExtension(path);
+        var extension = Path.GetExtension(path);
+        var useActualFileIcon = File.Exists(path) &&
+            (string.Equals(extension, ".exe", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(extension, ".ico", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(extension, ".lnk", StringComparison.OrdinalIgnoreCase));
+        var key = isParent || isDirectory
+            ? "folder"
+            : useActualFileIcon ? "file:" + path : extension;
         if (string.IsNullOrWhiteSpace(key))
         {
             key = "file";
         }
 
-        return Cache.GetOrAdd(key, _ => LoadSmallIcon(path, isDirectory || isParent));
+        return Cache.GetOrAdd(key, _ => LoadSmallIcon(path, isDirectory || isParent, useActualFileIcon));
     }
 
-    private static Image LoadSmallIcon(string path, bool isDirectory)
+    private static Image LoadSmallIcon(string path, bool isDirectory, bool useActualFileIcon)
     {
         var attributes = isDirectory ? FileAttributeDirectory : FileAttributeNormal;
         var iconPath = isDirectory ? Environment.GetFolderPath(Environment.SpecialFolder.Windows) : Path.GetExtension(path);
@@ -32,13 +39,19 @@ internal static class ShellIconProvider
             iconPath = "file";
         }
 
+        var flags = ShgfiIcon | ShgfiSmallIcon;
+        if (!useActualFileIcon)
+        {
+            flags |= ShgfiUseFileAttributes;
+        }
+
         var info = new ShFileInfo();
         var result = SHGetFileInfo(
-            iconPath,
+            useActualFileIcon ? path : iconPath,
             attributes,
             ref info,
             (uint)Marshal.SizeOf<ShFileInfo>(),
-            ShgfiIcon | ShgfiSmallIcon | ShgfiUseFileAttributes);
+            flags);
 
         if (result == IntPtr.Zero || info.IconHandle == IntPtr.Zero)
         {

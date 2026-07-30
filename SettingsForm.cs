@@ -25,12 +25,15 @@ internal sealed class SettingsForm : Form
     private void BuildUi()
     {
         Text = "Настройки";
+        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterParent;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(560, 452);
+        AutoScroll = true;
+        ClientSize = new Size(660, 610);
+        MinimumSize = new Size(660, 610);
         Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
         var root = new TableLayoutPanel
@@ -40,9 +43,9 @@ internal sealed class SettingsForm : Form
             RowCount = 3,
             Padding = new Padding(10)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 122));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 156));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
 
         root.Controls.Add(BuildFontGroup(), 0, 0);
         root.Controls.Add(BuildColorGroup(), 0, 1);
@@ -54,13 +57,13 @@ internal sealed class SettingsForm : Form
     private Control BuildFontGroup()
     {
         var group = new GroupBox { Text = "Шрифты", Dock = DockStyle.Fill };
-        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3, Padding = new Padding(8) };
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 116));
+        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3, Padding = new Padding(10, 14, 10, 10) };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
 
         grid.Controls.Add(new Label { Text = "Файлы:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
         _fileFontLabel.Dock = DockStyle.Fill;
@@ -77,10 +80,10 @@ internal sealed class SettingsForm : Form
         grid.Controls.Add(CreateButton("Выбрать", (_, _) => ChooseFolderFont()), 2, 1);
 
         grid.Controls.Add(new Label { Text = "Высота строки:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
-        _rowHeightBox.Minimum = 22;
-        _rowHeightBox.Maximum = 64;
+        _rowHeightBox.Minimum = 24;
+        _rowHeightBox.Maximum = 96;
         _rowHeightBox.Dock = DockStyle.Left;
-        _rowHeightBox.Width = 84;
+        _rowHeightBox.Width = 104;
         grid.Controls.Add(_rowHeightBox, 1, 2);
 
         group.Controls.Add(grid);
@@ -90,9 +93,9 @@ internal sealed class SettingsForm : Form
     private Control BuildColorGroup()
     {
         var group = new GroupBox { Text = "Цвета", Dock = DockStyle.Fill };
-        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 8, Padding = new Padding(8) };
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 8, Padding = new Padding(10, 14, 10, 10) };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         AddColorButton(grid, 0, "Текст файлов", nameof(AppThemeSettings.FileTextColor));
         AddColorButton(grid, 1, "Текст папок", nameof(AppThemeSettings.FolderTextColor));
@@ -109,42 +112,50 @@ internal sealed class SettingsForm : Form
 
     private Control BuildButtons()
     {
-        var panel = new FlowLayoutPanel
+        var panel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(0, 7, 0, 0)
+            ColumnCount = 5,
+            RowCount = 1,
+            Padding = new Padding(0, 10, 0, 0),
+            Margin = Padding.Empty
         };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        panel.Controls.Add(CreateButton("Отмена", (_, _) => DialogResult = DialogResult.Cancel));
-        panel.Controls.Add(CreateButton("OK", (_, _) =>
-        {
-            SaveToTheme();
-            DialogResult = DialogResult.OK;
-        }));
-        panel.Controls.Add(CreateButton("Применить", (_, _) =>
-        {
-            SaveToTheme();
-            ApplyRequested?.Invoke(this, EventArgs.Empty);
-        }));
-        panel.Controls.Add(CreateButton("По умолчанию", (_, _) =>
+        panel.Controls.Add(CreateDialogButton("Сбросить", 112, (_, _) =>
         {
             Theme = new AppThemeSettings();
             _fileFont = CreateFont(Theme.FileFontFamily, Theme.FileFontSize, Theme.FileFontStyle);
             _folderFont = CreateFont(Theme.FolderFontFamily, Theme.FolderFontSize, Theme.FolderFontStyle);
             FillFromTheme();
-        }));
+        }), 1, 0);
+        panel.Controls.Add(CreateDialogButton("Применить", 124, (_, _) =>
+        {
+            SaveToTheme();
+            ApplyRequested?.Invoke(this, EventArgs.Empty);
+        }), 2, 0);
+        panel.Controls.Add(CreateDialogButton("OK", 88, (_, _) =>
+        {
+            SaveToTheme();
+            DialogResult = DialogResult.OK;
+        }), 3, 0);
+        panel.Controls.Add(CreateDialogButton("Отмена", 112, (_, _) => DialogResult = DialogResult.Cancel), 4, 0);
 
         return panel;
     }
 
     private void AddColorButton(TableLayoutPanel grid, int row, string label, string key)
     {
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         grid.Controls.Add(new Label { Text = label + ":", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, row);
         var button = CreateButton("", (_, _) => ChooseColor(key));
         button.Dock = DockStyle.Left;
-        button.Width = 132;
+        button.Width = 154;
         _colorButtons[key] = button;
         grid.Controls.Add(button, 1, row);
     }
@@ -267,7 +278,24 @@ internal sealed class SettingsForm : Form
 
     private static Button CreateButton(string text, EventHandler click)
     {
-        var button = new Button { Text = text, Width = 88, Height = 26 };
+        var width = string.Equals(text, "По умолчанию", StringComparison.Ordinal) ? 132 : 104;
+        var button = new Button { Text = text, Width = width, Height = 32, MinimumSize = new Size(width, 32), Margin = new Padding(4, 2, 4, 2) };
+        button.Click += click;
+        return button;
+    }
+
+    private static Button CreateDialogButton(string text, int minimumWidth, EventHandler click)
+    {
+        var button = new Button
+        {
+            Text = text,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(minimumWidth, 34),
+            Height = 34,
+            Margin = new Padding(4, 2, 0, 2),
+            UseMnemonic = false
+        };
         button.Click += click;
         return button;
     }

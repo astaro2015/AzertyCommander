@@ -13,6 +13,8 @@ internal sealed class FilePanel : UserControl
     private readonly BindingList<FileSystemEntry> _entries = new();
     private readonly HashSet<string> _markedPaths = new(StringComparer.OrdinalIgnoreCase);
     private Point _dragStartPoint;
+    private DateTime _lastRenameClickUtc = DateTime.MinValue;
+    private string? _lastRenameClickPath;
     private AppThemeSettings _theme = new();
     private Font _fileFont = new("Segoe UI", 9.75F, FontStyle.Regular, GraphicsUnit.Point);
     private Font _folderFont = new("Segoe UI", 9.75F, FontStyle.Regular, GraphicsUnit.Point);
@@ -24,6 +26,7 @@ internal sealed class FilePanel : UserControl
     private Color _selectedTextColor = SystemColors.HighlightText;
     private Color _activePanelBackgroundColor = Color.FromArgb(212, 232, 247);
     private Color _activePathBackgroundColor = Color.FromArgb(232, 246, 255);
+    private bool _isActivePanel;
     private bool _loadingDrives;
     private string _sortColumn = nameof(FileSystemEntry.DisplayName);
     private bool _sortAscending = true;
@@ -37,7 +40,9 @@ internal sealed class FilePanel : UserControl
 
     public event EventHandler? ActivatedPanel;
     public event EventHandler? PathChanged;
+    public event EventHandler<FilePanelEntryEventArgs>? RenameRequested;
     public event EventHandler<FilePanelDropEventArgs>? FilesDropped;
+    public event EventHandler<FilePanelShellContextMenuEventArgs>? ShellContextMenuRequested;
 
     public string CurrentPath { get; private set; } = string.Empty;
 
@@ -145,20 +150,19 @@ internal sealed class FilePanel : UserControl
         _activePathBackgroundColor = ColorTools.FromHtml(_theme.ActivePathBackgroundColor, Color.FromArgb(232, 246, 255));
 
         var fontHeight = Math.Ceiling(Math.Max(_fileFont.GetHeight(), _folderFont.GetHeight()));
-        var rowHeight = Math.Max(_theme.RowHeight, (int)fontHeight + 12);
+        var rowHeight = Math.Max(28, Math.Max(_theme.RowHeight, (int)fontHeight + 8));
         _grid.RowTemplate.Height = rowHeight;
         foreach (DataGridViewRow row in _grid.Rows)
         {
             row.Height = rowHeight;
         }
 
-        _grid.ColumnHeadersHeight = Math.Max(30, rowHeight);
+        _grid.ColumnHeadersHeight = Math.Max(32, rowHeight + 2);
         _grid.BackgroundColor = _listBackgroundColor;
         _grid.DefaultCellStyle.Font = _fileFont;
         _grid.DefaultCellStyle.BackColor = _listBackgroundColor;
         _grid.DefaultCellStyle.ForeColor = _fileTextColor;
-        _grid.DefaultCellStyle.SelectionBackColor = _selectedBackgroundColor;
-        _grid.DefaultCellStyle.SelectionForeColor = _selectedTextColor;
+        ApplySelectionColors();
         _grid.ColumnHeadersDefaultCellStyle.Font = _fileFont;
         _grid.Invalidate();
     }
@@ -182,7 +186,16 @@ internal sealed class FilePanel : UserControl
         {
             if (widths.TryGetValue(column.Name, out var width))
             {
-                column.Width = Math.Clamp(width, 24, 1200);
+                if (column.Name == nameof(FileSystemEntry.DisplayName) &&
+                    column.AutoSizeMode == DataGridViewAutoSizeColumnMode.Fill)
+                {
+                    column.FillWeight = Math.Clamp(width, 180, 1600);
+                    column.MinimumWidth = Math.Clamp(Math.Min(width, 260), 180, 600);
+                }
+                else
+                {
+                    column.Width = Math.Clamp(width, 24, 1200);
+                }
             }
         }
     }
@@ -370,12 +383,22 @@ internal sealed class FilePanel : UserControl
 
     public void MarkActive(bool active)
     {
+        _isActivePanel = active;
         BackColor = active ? _activePanelBackgroundColor : SystemColors.Control;
         _pathBox.BackColor = active ? _activePathBackgroundColor : SystemColors.Window;
+        ApplySelectionColors();
+        _grid.Invalidate();
+    }
+
+    private void ApplySelectionColors()
+    {
+        _grid.DefaultCellStyle.SelectionBackColor = _isActivePanel ? _selectedBackgroundColor : _listBackgroundColor;
+        _grid.DefaultCellStyle.SelectionForeColor = _isActivePanel ? _selectedTextColor : _fileTextColor;
     }
 
     private void InitializeUi()
     {
+        AutoScaleMode = AutoScaleMode.Dpi;
         Dock = DockStyle.Fill;
         Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
@@ -386,10 +409,10 @@ internal sealed class FilePanel : UserControl
             RowCount = 4,
             Padding = new Padding(2)
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
 
         var driveRow = new TableLayoutPanel
         {
@@ -397,11 +420,12 @@ internal sealed class FilePanel : UserControl
             ColumnCount = 2,
             Margin = Padding.Empty
         };
-        driveRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        driveRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         driveRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         _driveBox.DropDownStyle = ComboBoxStyle.DropDownList;
         _driveBox.Dock = DockStyle.Fill;
+        _driveBox.Margin = new Padding(0, 4, 8, 4);
         _driveBox.SelectedIndexChanged += (_, _) =>
         {
             if (!_loadingDrives && _driveBox.SelectedItem is DriveItem drive)
@@ -413,11 +437,13 @@ internal sealed class FilePanel : UserControl
         driveRow.Controls.Add(_driveBox, 0, 0);
 
         _spaceLabel.Dock = DockStyle.Fill;
+        _spaceLabel.Margin = new Padding(0, 4, 0, 4);
         _spaceLabel.TextAlign = ContentAlignment.MiddleLeft;
         _spaceLabel.AutoEllipsis = true;
         driveRow.Controls.Add(_spaceLabel, 1, 0);
 
         _pathBox.Dock = DockStyle.Fill;
+        _pathBox.Margin = new Padding(0, 2, 0, 4);
         _pathBox.BorderStyle = BorderStyle.FixedSingle;
         _pathBox.KeyDown += (_, args) =>
         {
@@ -439,25 +465,25 @@ internal sealed class FilePanel : UserControl
         _grid.BorderStyle = BorderStyle.FixedSingle;
         _grid.CellBorderStyle = DataGridViewCellBorderStyle.None;
         _grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
-        _grid.ColumnHeadersHeight = 30;
+        _grid.ColumnHeadersHeight = 32;
         _grid.DataSource = _entries;
         _grid.DefaultCellStyle = new DataGridViewCellStyle
         {
             Font = new Font("Segoe UI", 9.75F, FontStyle.Regular, GraphicsUnit.Point),
-            Padding = new Padding(0, 3, 0, 3),
+            Padding = new Padding(0),
             SelectionBackColor = SystemColors.Highlight,
             SelectionForeColor = SystemColors.HighlightText
         };
         _grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
         {
             Font = new Font("Segoe UI", 9.75F, FontStyle.Regular, GraphicsUnit.Point),
-            Padding = new Padding(0, 3, 0, 3)
+            Padding = new Padding(0)
         };
         _grid.EditMode = DataGridViewEditMode.EditProgrammatically;
         _grid.MultiSelect = true;
         _grid.ReadOnly = true;
         _grid.RowHeadersVisible = false;
-        _grid.RowTemplate.Height = 30;
+        _grid.RowTemplate.Height = AppThemeSettings.DefaultRowHeight;
         _grid.ScrollBars = ScrollBars.Both;
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         _grid.StandardTab = true;
@@ -475,7 +501,9 @@ internal sealed class FilePanel : UserControl
             DataPropertyName = nameof(FileSystemEntry.DisplayName),
             HeaderText = "Имя",
             Name = nameof(FileSystemEntry.DisplayName),
-            AutoSizeMode = DataGridViewAutoSizeColumnMode.None,
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+            MinimumWidth = 180,
+            FillWeight = 420,
             Width = 420
         });
         _grid.Columns.Add(new DataGridViewTextBoxColumn
@@ -491,7 +519,7 @@ internal sealed class FilePanel : UserControl
             HeaderText = "Размер",
             Name = nameof(FileSystemEntry.SizeText),
             Width = 96,
-            DefaultCellStyle = new DataGridViewCellStyle { Alignment = DataGridViewContentAlignment.MiddleRight, Padding = new Padding(0, 3, 0, 3) }
+            DefaultCellStyle = new DataGridViewCellStyle { Alignment = DataGridViewContentAlignment.MiddleRight, Padding = new Padding(0) }
         });
         _grid.Columns.Add(new DataGridViewTextBoxColumn
         {
@@ -509,11 +537,13 @@ internal sealed class FilePanel : UserControl
         });
         _grid.CellDoubleClick += (_, args) =>
         {
+            ResetSlowRenameClick();
             if (args.RowIndex >= 0)
             {
                 OpenFocusedEntry();
             }
         };
+        _grid.CellMouseClick += (_, args) => HandleGridCellMouseClick(args);
         _grid.CellFormatting += (_, args) =>
         {
             if (args.RowIndex < 0 || args.CellStyle is null || _grid.Rows[args.RowIndex].DataBoundItem is not FileSystemEntry entry)
@@ -522,11 +552,15 @@ internal sealed class FilePanel : UserControl
             }
 
             var marked = !entry.IsParent && _markedPaths.Contains(entry.FullPath);
+            var normalTextColor = marked ? _markedTextColor : entry.IsDirectory ? _folderTextColor : _fileTextColor;
+
             args.CellStyle.Font = entry.IsDirectory ? _folderFont : _fileFont;
             args.CellStyle.BackColor = _listBackgroundColor;
-            args.CellStyle.SelectionBackColor = _selectedBackgroundColor;
-            args.CellStyle.ForeColor = marked ? _markedTextColor : entry.IsDirectory ? _folderTextColor : _fileTextColor;
-            args.CellStyle.SelectionForeColor = marked ? _markedTextColor : _selectedTextColor;
+            args.CellStyle.ForeColor = normalTextColor;
+            args.CellStyle.SelectionBackColor = _isActivePanel ? _selectedBackgroundColor : _listBackgroundColor;
+            args.CellStyle.SelectionForeColor = _isActivePanel
+                ? marked ? _markedTextColor : _selectedTextColor
+                : normalTextColor;
         };
         _grid.ColumnHeaderMouseClick += (_, args) =>
         {
@@ -619,6 +653,7 @@ internal sealed class FilePanel : UserControl
         };
 
         _statusLabel.Dock = DockStyle.Fill;
+        _statusLabel.Margin = new Padding(0, 3, 0, 3);
         _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
         _statusLabel.AutoEllipsis = true;
 
@@ -754,6 +789,95 @@ internal sealed class FilePanel : UserControl
     private void ActivatePanel()
     {
         ActivatedPanel?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void HandleSlowRenameClick(DataGridViewCellMouseEventArgs args)
+    {
+        if (args.Button != MouseButtons.Left ||
+            args.Clicks != 1 ||
+            args.RowIndex < 0 ||
+            _grid.Rows[args.RowIndex].DataBoundItem is not FileSystemEntry { IsParent: false } entry)
+        {
+            ResetSlowRenameClick();
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        var elapsed = now - _lastRenameClickUtc;
+        var doubleClickTimeout = TimeSpan.FromMilliseconds(SystemInformation.DoubleClickTime);
+        var slowRenameTimeout = TimeSpan.FromMilliseconds(Math.Max(1200, SystemInformation.DoubleClickTime * 5));
+
+        if (string.Equals(_lastRenameClickPath, entry.FullPath, StringComparison.OrdinalIgnoreCase) &&
+            elapsed > doubleClickTimeout &&
+            elapsed <= slowRenameTimeout)
+        {
+            ResetSlowRenameClick();
+            RenameRequested?.Invoke(this, new FilePanelEntryEventArgs(entry));
+            return;
+        }
+
+        _lastRenameClickPath = entry.FullPath;
+        _lastRenameClickUtc = now;
+    }
+
+    private void HandleGridCellMouseClick(DataGridViewCellMouseEventArgs args)
+    {
+        if (args.Button == MouseButtons.Right)
+        {
+            HandleShellContextMenuClick(args);
+            return;
+        }
+
+        HandleSlowRenameClick(args);
+    }
+
+    private void HandleShellContextMenuClick(DataGridViewCellMouseEventArgs args)
+    {
+        ResetSlowRenameClick();
+        if (args.RowIndex < 0 ||
+            _grid.Rows[args.RowIndex].DataBoundItem is not FileSystemEntry { IsParent: false } entry)
+        {
+            return;
+        }
+
+        ActivatePanel();
+        var selectedEntries = SelectedEntries;
+        var rowIsAlreadySelected = selectedEntries.Any(selected =>
+            string.Equals(selected.FullPath, entry.FullPath, StringComparison.OrdinalIgnoreCase));
+
+        if (!rowIsAlreadySelected)
+        {
+            _markedPaths.Clear();
+            _grid.ClearSelection();
+            _grid.Rows[args.RowIndex].Selected = true;
+            _grid.CurrentCell = _grid.Rows[args.RowIndex].Cells[nameof(FileSystemEntry.DisplayName)];
+            selectedEntries = new[] { entry };
+            _grid.Invalidate();
+            UpdateStatus(null);
+        }
+        else
+        {
+            _grid.CurrentCell = _grid.Rows[args.RowIndex].Cells[nameof(FileSystemEntry.DisplayName)];
+        }
+
+        var paths = selectedEntries
+            .Where(selected => !selected.IsParent && (File.Exists(selected.FullPath) || Directory.Exists(selected.FullPath)))
+            .Select(selected => selected.FullPath)
+            .ToArray();
+
+        if (paths.Length == 0)
+        {
+            return;
+        }
+
+        var screenLocation = _grid.PointToScreen(new Point(args.X, args.Y));
+        ShellContextMenuRequested?.Invoke(this, new FilePanelShellContextMenuEventArgs(paths, screenLocation));
+    }
+
+    private void ResetSlowRenameClick()
+    {
+        _lastRenameClickPath = null;
+        _lastRenameClickUtc = DateTime.MinValue;
     }
 
     private void HandleMouseNavigation(MouseEventArgs args)
@@ -942,13 +1066,7 @@ internal sealed class FilePanel : UserControl
         {
             try
             {
-                var letter = drive.Name.TrimEnd(Path.DirectorySeparatorChar);
-                if (drive.IsReady && !string.IsNullOrWhiteSpace(drive.VolumeLabel))
-                {
-                    return $"{letter} [{drive.VolumeLabel}]";
-                }
-
-                return letter;
+                return drive.Name.TrimEnd(Path.DirectorySeparatorChar);
             }
             catch
             {

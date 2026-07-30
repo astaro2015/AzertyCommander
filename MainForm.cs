@@ -31,11 +31,20 @@ internal sealed class MainForm : Form
     private void BuildUi()
     {
         Text = $"AZERTY Commander {BuildInfo.Version}";
+        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1180, 700);
         Size = CalculateDefaultWindowSize();
         KeyPreview = true;
         Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+        try
+        {
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? Icon;
+        }
+        catch
+        {
+            // The window icon is cosmetic; startup must not fail because of it.
+        }
 
         var root = new TableLayoutPanel
         {
@@ -43,18 +52,20 @@ internal sealed class MainForm : Form
             ColumnCount = 1,
             RowCount = 5
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
-        root.Controls.Add(BuildMenu(), 0, 0);
+        var mainMenu = BuildMenu();
+        MainMenuStrip = mainMenu;
+        root.Controls.Add(mainMenu, 0, 0);
         root.Controls.Add(BuildQuickLaunchBar(), 0, 1);
 
         _splitContainer.Dock = DockStyle.Fill;
         _splitContainer.Orientation = Orientation.Vertical;
-        _splitContainer.SplitterWidth = 5;
+        _splitContainer.SplitterWidth = 2;
         _splitContainer.Panel1MinSize = 1;
         _splitContainer.Panel2MinSize = 1;
         _splitContainer.SplitterMoved += (_, _) =>
@@ -68,14 +79,19 @@ internal sealed class MainForm : Form
         _splitContainer.Panel2.Controls.Add(_rightPanel);
         root.Controls.Add(_splitContainer, 0, 2);
 
-        var commandRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(4, 3, 4, 3) };
+        var commandRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(4, 5, 4, 5) };
         commandRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
         commandRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         commandRow.Controls.Add(new Label { Text = "Командная строка:", TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill }, 0, 0);
         _commandBox.Dock = DockStyle.Fill;
         _commandBox.KeyDown += (_, args) =>
         {
-            if (args.KeyCode == Keys.Enter)
+            if (args.KeyCode == Keys.Enter && args.Control && args.Shift)
+            {
+                args.SuppressKeyPress = true;
+                InsertFocusedPathIntoCommandLine();
+            }
+            else if (args.KeyCode == Keys.Enter)
             {
                 args.SuppressKeyPress = true;
                 RunCommandLine();
@@ -86,7 +102,12 @@ internal sealed class MainForm : Form
 
         root.Controls.Add(BuildFunctionBar(), 0, 4);
 
-        var statusStrip = new StatusStrip();
+        var statusStrip = new StatusStrip
+        {
+            AutoSize = false,
+            Height = 28,
+            SizingGrip = true
+        };
         statusStrip.Items.Add(_statusLabel);
         Controls.Add(root);
         Controls.Add(statusStrip);
@@ -124,7 +145,13 @@ internal sealed class MainForm : Form
 
     private MenuStrip BuildMenu()
     {
-        var menu = new MenuStrip { Dock = DockStyle.Fill };
+        var menu = new MenuStrip
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            Padding = new Padding(4, 4, 4, 4),
+            Margin = Padding.Empty
+        };
 
         var files = new ToolStripMenuItem("Файлы");
         files.DropDownItems.Add(CreateMenuItem("Просмотр\tF3", (_, _) => ViewText()));
@@ -132,7 +159,7 @@ internal sealed class MainForm : Form
         files.DropDownItems.Add(new ToolStripSeparator());
         files.DropDownItems.Add(CreateMenuItem("Копировать\tF5", async (_, _) => await CopySelectedAsync()));
         files.DropDownItems.Add(CreateMenuItem("Переместить\tF6", async (_, _) => await MoveSelectedAsync()));
-        files.DropDownItems.Add(CreateMenuItem("Удалить\tF8", (_, _) => DeleteSelected(false)));
+        files.DropDownItems.Add(CreateMenuItem("Удалить\tF8/Del", (_, _) => DeleteSelected(false)));
         files.DropDownItems.Add(CreateMenuItem("Удалить безвозвратно\tShift+Del", (_, _) => DeleteSelected(true)));
         files.DropDownItems.Add(new ToolStripSeparator());
         files.DropDownItems.Add(CreateMenuItem("Копировать в буфер\tCtrl+C", (_, _) => CopySelectionToClipboard(false)));
@@ -147,6 +174,7 @@ internal sealed class MainForm : Form
 
         var commands = new ToolStripMenuItem("Команды");
         commands.DropDownItems.Add(CreateMenuItem("Поиск\tCtrl+F", (_, _) => ShowSearch()));
+        commands.DropDownItems.Add(CreateMenuItem("Сравнить файлы побайтово", async (_, _) => await CompareSelectedFilesAsync()));
         commands.DropDownItems.Add(new ToolStripSeparator());
         commands.DropDownItems.Add(CreateMenuItem("Упаковать ZIP", async (_, _) => await CreateZipAsync()));
         commands.DropDownItems.Add(CreateMenuItem("Распаковать ZIP", async (_, _) => await ExtractZipAsync()));
@@ -212,9 +240,10 @@ internal sealed class MainForm : Form
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Копировать (F5)", ToolbarIconFactory.Copy(), async (_, _) => await CopySelectedAsync()));
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Переместить (F6)", ToolbarIconFactory.Move(), async (_, _) => await MoveSelectedAsync()));
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Новая папка (F7)", ToolbarIconFactory.NewFolder(), (_, _) => CreateFolder()));
-        _quickLaunchToolbar.Items.Add(CreateQuickButton("Удалить в корзину (F8)", ToolbarIconFactory.Delete(), (_, _) => DeleteSelected(false)));
+        _quickLaunchToolbar.Items.Add(CreateQuickButton("Удалить в корзину (F8/Del)", ToolbarIconFactory.Delete(), (_, _) => DeleteSelected(false)));
         _quickLaunchToolbar.Items.Add(new ToolStripSeparator());
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Поиск (Ctrl+F)", ToolbarIconFactory.Search(), (_, _) => ShowSearch()));
+        _quickLaunchToolbar.Items.Add(CreateQuickButton("Сравнить файлы побайтово", ToolbarIconFactory.Compare(), async (_, _) => await CompareSelectedFilesAsync()));
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Упаковать ZIP", ToolbarIconFactory.ZipPack(), async (_, _) => await CreateZipAsync()));
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Распаковать ZIP", ToolbarIconFactory.ZipExtract(), async (_, _) => await ExtractZipAsync()));
         _quickLaunchToolbar.Items.Add(CreateQuickButton("FTP подключение", ToolbarIconFactory.FtpClient(), (_, _) => ShowFtpClient()));
@@ -251,7 +280,7 @@ internal sealed class MainForm : Form
         bar.Controls.Add(CreateBottomButton("F5 Копирование", async (_, _) => await CopySelectedAsync()), 1, 0);
         bar.Controls.Add(CreateBottomButton("F6 Перемещение", async (_, _) => await MoveSelectedAsync()), 2, 0);
         bar.Controls.Add(CreateBottomButton("F7 Каталог", (_, _) => CreateFolder()), 3, 0);
-        bar.Controls.Add(CreateBottomButton("F8 Удаление", (_, _) => DeleteSelected(false)), 4, 0);
+        bar.Controls.Add(CreateBottomButton("F8/Del Удаление", (_, _) => DeleteSelected(false)), 4, 0);
         bar.Controls.Add(CreateBottomButton("Ctrl+F Поиск", (_, _) => ShowSearch()), 5, 0);
         bar.Controls.Add(CreateBottomButton("Alt+F4 Выход", (_, _) => Close()), 6, 0);
 
@@ -264,8 +293,12 @@ internal sealed class MainForm : Form
         _rightPanel.ActivatedPanel += (_, _) => SetActivePanel(_rightPanel);
         _leftPanel.PathChanged += (_, _) => UpdateStatus();
         _rightPanel.PathChanged += (_, _) => UpdateStatus();
+        _leftPanel.RenameRequested += (_, args) => RenameEntry(args.Entry);
+        _rightPanel.RenameRequested += (_, args) => RenameEntry(args.Entry);
         _leftPanel.FilesDropped += async (_, args) => await DropFilesIntoPanelAsync(args);
         _rightPanel.FilesDropped += async (_, args) => await DropFilesIntoPanelAsync(args);
+        _leftPanel.ShellContextMenuRequested += (_, args) => ShowShellContextMenu(args);
+        _rightPanel.ShellContextMenuRequested += (_, args) => ShowShellContextMenu(args);
     }
 
     private void LoadInitialPaths()
@@ -287,6 +320,13 @@ internal sealed class MainForm : Form
     {
         switch (keyData)
         {
+            case Keys.Control | Keys.Shift | Keys.Enter:
+                if (ActiveControl == _commandBox)
+                {
+                    InsertFocusedPathIntoCommandLine();
+                    return true;
+                }
+                break;
             case Keys.F2:
                 RenameSelected();
                 return true;
@@ -305,6 +345,13 @@ internal sealed class MainForm : Form
             case Keys.F8:
                 DeleteSelected(false);
                 return true;
+            case Keys.Delete:
+                if (!IsInputControlFocused())
+                {
+                    DeleteSelected(false);
+                    return true;
+                }
+                break;
             case Keys.Insert:
                 _activePanel.ToggleFocusedSelectionAndMoveNext();
                 return true;
@@ -315,8 +362,12 @@ internal sealed class MainForm : Form
                 _activePanel.EnterFocusedDirectory();
                 return true;
             case Keys.Shift | Keys.Delete:
-                DeleteSelected(true);
-                return true;
+                if (!IsInputControlFocused())
+                {
+                    DeleteSelected(true);
+                    return true;
+                }
+                break;
             case Keys.Control | Keys.C:
             case Keys.Control | Keys.Insert:
                 CopySelectionToClipboard(false);
@@ -350,6 +401,31 @@ internal sealed class MainForm : Form
         }
 
         return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private bool IsInputControlFocused()
+    {
+        var focused = FindFocusedControl(this);
+        return focused is TextBoxBase or ComboBox or NumericUpDown;
+    }
+
+    private static Control? FindFocusedControl(Control root)
+    {
+        if (root.Focused)
+        {
+            return root;
+        }
+
+        foreach (Control child in root.Controls)
+        {
+            var focused = FindFocusedControl(child);
+            if (focused is not null)
+            {
+                return focused;
+            }
+        }
+
+        return null;
     }
 
     private void SetActivePanel(FilePanel panel)
@@ -534,6 +610,44 @@ internal sealed class MainForm : Form
         RefreshPanels();
     }
 
+    private async Task CompareSelectedFilesAsync()
+    {
+        var left = GetSingleCompareFile(_leftPanel, "левой");
+        if (left is null)
+        {
+            return;
+        }
+
+        var right = GetSingleCompareFile(_rightPanel, "правой");
+        if (right is null)
+        {
+            return;
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        using var progressForm = new ProgressForm("Сравнение файлов");
+        progressForm.CancelRequested += (_, _) => cancellation.Cancel();
+        var progress = new Progress<OperationProgress>(progressForm.SetProgress);
+        progressForm.Show(this);
+
+        try
+        {
+            var result = await FileOperations.CompareFilesByBytesAsync(left.FullPath, right.FullPath, progress, cancellation.Token);
+            progressForm.Close();
+            ShowCompareResult(left, right, result);
+        }
+        catch (OperationCanceledException)
+        {
+            progressForm.Close();
+            MessageBox.Show(this, "Сравнение отменено.", "Сравнение файлов", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            progressForm.Close();
+            MessageBox.Show(this, ex.Message, "Сравнение файлов", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private async Task DropFilesIntoPanelAsync(FilePanelDropEventArgs args)
     {
         var entries = args.Paths
@@ -614,6 +728,16 @@ internal sealed class MainForm : Form
     {
         var entry = _activePanel.MarkedOrFocusedEntries.FirstOrDefault() ?? _activePanel.FocusedEntry;
         if (entry is null || entry.IsParent)
+        {
+            return;
+        }
+
+        RenameEntry(entry);
+    }
+
+    private void RenameEntry(FileSystemEntry entry)
+    {
+        if (entry.IsParent)
         {
             return;
         }
@@ -751,7 +875,21 @@ internal sealed class MainForm : Form
 
     private void ShowFtpClient()
     {
-        using var ftpClient = new FtpClientForm(() => _activePanel.CurrentPath, RefreshPanels);
+        using var connectionManager = new FtpConnectionManagerForm(_settings.FtpConnections, _settings.FtpConnectionGroups, _activePanel.CurrentPath);
+        var result = connectionManager.ShowDialog(this);
+        if (connectionManager.ProfilesChanged)
+        {
+            _settings.FtpConnections = connectionManager.Profiles.Select(profile => profile.Clone()).ToList();
+            _settings.FtpConnectionGroups = connectionManager.Groups.ToList();
+            AppSettingsStore.Save(_settings);
+        }
+
+        if (result != DialogResult.OK || connectionManager.SelectedProfile is null)
+        {
+            return;
+        }
+
+        using var ftpClient = new FtpClientForm(connectionManager.SelectedProfile, () => _activePanel.CurrentPath, RefreshPanels);
         ftpClient.ShowDialog(this);
     }
 
@@ -759,6 +897,22 @@ internal sealed class MainForm : Form
     {
         using var ftpServer = new FtpServerForm(_activePanel.CurrentPath);
         ftpServer.ShowDialog(this);
+    }
+
+    private void ShowShellContextMenu(FilePanelShellContextMenuEventArgs args)
+    {
+        try
+        {
+            var commandInvoked = ShellContextMenu.Show(this, args.Paths, args.ScreenLocation);
+            if (commandInvoked)
+            {
+                BeginInvoke(RefreshPanels);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Меню Windows", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void RunCommandLine()
@@ -784,6 +938,49 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void InsertFocusedPathIntoCommandLine()
+    {
+        var entry = _activePanel.FocusedEntry;
+        var path = !string.IsNullOrWhiteSpace(entry?.FullPath)
+            ? entry.FullPath
+            : _activePanel.CurrentPath;
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        InsertTextIntoCommandLine(QuoteCommandArgument(path));
+    }
+
+    private void InsertTextIntoCommandLine(string text)
+    {
+        var start = _commandBox.SelectionStart;
+        var length = _commandBox.SelectionLength;
+        var before = _commandBox.Text[..start];
+        var after = _commandBox.Text[(start + length)..];
+
+        if (before.Length > 0 && !char.IsWhiteSpace(before[^1]) && !text.StartsWith(' '))
+        {
+            text = " " + text;
+        }
+
+        if (after.Length > 0 && !char.IsWhiteSpace(after[0]) && !text.EndsWith(' '))
+        {
+            text += " ";
+        }
+
+        _commandBox.Text = before + text + after;
+        _commandBox.SelectionStart = before.Length + text.Length;
+        _commandBox.SelectionLength = 0;
+        _commandBox.Focus();
+    }
+
+    private static string QuoteCommandArgument(string value)
+    {
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
+    }
+
     private IReadOnlyList<FileSystemEntry>? GetSelectedEntries(string title)
     {
         var entries = _activePanel.MarkedOrFocusedEntries;
@@ -794,6 +991,50 @@ internal sealed class MainForm : Form
         }
 
         return entries;
+    }
+
+    private FileSystemEntry? GetSingleCompareFile(FilePanel panel, string panelName)
+    {
+        var entries = panel.MarkedOrFocusedEntries.ToList();
+        if (entries.Count != 1)
+        {
+            MessageBox.Show(this, $"В {panelName} панели выберите ровно один файл.", "Сравнение файлов", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return null;
+        }
+
+        var entry = entries[0];
+        if (entry.IsDirectory)
+        {
+            MessageBox.Show(this, $"В {panelName} панели выбрана папка. Нужен файл.", "Сравнение файлов", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return null;
+        }
+
+        return entry;
+    }
+
+    private void ShowCompareResult(FileSystemEntry left, FileSystemEntry right, FileCompareResult result)
+    {
+        if (result.AreEqual)
+        {
+            MessageBox.Show(
+                this,
+                $"Файлы одинаковы.\n\n{left.FullPath}\n{right.FullPath}\n\nРазмер: {FormatBytes(result.LeftLength)}",
+                "Сравнение файлов",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var detail = result.FirstDifferenceOffset is long offset
+            ? $"Первое отличие: байт {offset:N0} (0x{offset:X})."
+            : $"Размеры отличаются: {FormatBytes(result.LeftLength)} и {FormatBytes(result.RightLength)}.";
+
+        MessageBox.Show(
+            this,
+            $"Файлы отличаются.\n\n{left.FullPath}\n{right.FullPath}\n\n{detail}",
+            "Сравнение файлов",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
     }
 
     private void CopySelectionToClipboard(bool cut)
@@ -1116,6 +1357,20 @@ internal sealed class MainForm : Form
         return candidate;
     }
 
+    private static string FormatBytes(long value)
+    {
+        string[] units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+        var size = (double)value;
+        var unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+
+        return unit == 0 ? $"{value:N0} {units[unit]}" : $"{size:N1} {units[unit]}";
+    }
+
     private async Task RunOperationAsync(string title, Func<OperationContext, Task> operation)
     {
         using var cancellation = new CancellationTokenSource();
@@ -1151,7 +1406,7 @@ internal sealed class MainForm : Form
     {
         MessageBox.Show(
             this,
-            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8 удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+F поиск\nDrag && Drop: Ctrl копировать, Shift перемещать\nFTP: клиент и встроенный сервер без TLS",
+            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+F поиск\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: Ctrl копировать, Shift перемещать\nFTP: клиент и встроенный сервер без TLS",
             "О программе",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
@@ -1219,7 +1474,8 @@ internal sealed class MainForm : Form
             Text = text,
             Dock = DockStyle.Fill,
             Margin = new Padding(0),
-            FlatStyle = FlatStyle.System
+            FlatStyle = FlatStyle.System,
+            MinimumSize = new Size(0, 34)
         };
         button.Click += click;
         return button;
