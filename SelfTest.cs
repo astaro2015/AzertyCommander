@@ -345,6 +345,22 @@ internal static class SelfTest
                 return false;
             }
 
+            var folderPath = Path.Combine(left, "folder");
+            if (!panel.SelectPath(folderPath))
+            {
+                Console.Error.WriteLine("Folder selection check failed.");
+                return false;
+            }
+
+            WaitWithMessagePump(panel.ToggleFocusedSelectionAndCalculateDirectorySizeAsync());
+            var folderEntry = panel.SelectedEntries.FirstOrDefault(entry => string.Equals(entry.FullPath, folderPath, StringComparison.OrdinalIgnoreCase));
+            if (folderEntry?.Size != 5 || string.IsNullOrWhiteSpace(folderEntry.SizeText))
+            {
+                Console.Error.WriteLine("Space folder size check failed.");
+                return false;
+            }
+
+            panel.ClearSelection();
             panel.ToggleFocusedSelectionAndMoveNext();
             panel.ToggleFocusedSelectionAndMoveNext();
             if (panel.SelectedEntries.Count == 0)
@@ -422,6 +438,17 @@ internal static class SelfTest
                 yield return descendant;
             }
         }
+    }
+
+    private static void WaitWithMessagePump(Task task)
+    {
+        while (!task.IsCompleted)
+        {
+            Application.DoEvents();
+            Thread.Sleep(10);
+        }
+
+        task.GetAwaiter().GetResult();
     }
 
     private static bool ExecutableIconLooksBlue()

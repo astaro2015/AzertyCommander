@@ -19,16 +19,21 @@ internal sealed class FileSystemEntry
     public string FullPath { get; }
     public bool IsDirectory { get; }
     public bool IsParent { get; }
-    public long? Size { get; }
+    public long? Size { get; private set; }
     public DateTime Modified { get; }
     public FileAttributes Attributes { get; }
 
     public Image SmallIcon => ShellIconProvider.GetSmallIcon(FullPath, IsDirectory, IsParent);
     public string DisplayName => IsParent ? "[..]" : Name;
     public string TypeText => IsParent ? string.Empty : IsDirectory ? "<Папка>" : GetExtensionText();
-    public string SizeText => IsParent || IsDirectory || Size is null ? string.Empty : Size.Value.ToString("N0", CultureInfo.CurrentCulture);
+    public string SizeText => IsParent || Size is null ? string.Empty : Size.Value.ToString("N0", CultureInfo.CurrentCulture);
     public string DateText => IsParent ? string.Empty : Modified.ToString("dd.MM.yyyy HH:mm", CultureInfo.CurrentCulture);
     public string AttributesText => IsParent ? string.Empty : BuildAttributesText();
+
+    public void SetSize(long size)
+    {
+        Size = Math.Max(0, size);
+    }
 
     private string GetExtensionText()
     {

@@ -386,10 +386,7 @@ internal sealed class FilePanel : UserControl
         var currentRow = _grid.CurrentRow;
         if (currentRow.DataBoundItem is FileSystemEntry { IsParent: false } currentEntry)
         {
-            if (!_markedPaths.Add(currentEntry.FullPath))
-            {
-                _markedPaths.Remove(currentEntry.FullPath);
-            }
+            ToggleEntrySelection(currentEntry);
         }
 
         var nextIndex = Math.Min(currentRow.Index + 1, _grid.Rows.Count - 1);
@@ -408,6 +405,51 @@ internal sealed class FilePanel : UserControl
         UpdateStatus(null);
     }
 
+    public async Task ToggleFocusedSelectionAndCalculateDirectorySizeAsync()
+    {
+        FocusList();
+        if (_grid.CurrentRow is null || _grid.Rows.Count == 0)
+        {
+            return;
+        }
+
+        var rowIndex = _grid.CurrentRow.Index;
+        if (_grid.CurrentRow.DataBoundItem is not FileSystemEntry { IsParent: false } entry)
+        {
+            return;
+        }
+
+        ToggleEntrySelection(entry);
+        _grid.ClearSelection();
+        _grid.Rows[rowIndex].Selected = true;
+        _grid.InvalidateRow(rowIndex);
+        UpdateStatus(null);
+
+        if (!entry.IsDirectory || entry.Size is not null || !Directory.Exists(entry.FullPath))
+        {
+            return;
+        }
+
+        _statusLabel.Text = "считаю размер: " + entry.Name;
+        var path = entry.FullPath;
+        var size = await Task.Run(() => CountDirectoryBytes(path));
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        var currentIndex = _entries.IndexOf(entry);
+        if (currentIndex < 0)
+        {
+            return;
+        }
+
+        entry.SetSize(size);
+        _entries.ResetItem(currentIndex);
+        _grid.InvalidateRow(currentIndex);
+        UpdateStatus(null);
+    }
+
     public void MarkActive(bool active)
     {
         _isActivePanel = active;
@@ -421,6 +463,14 @@ internal sealed class FilePanel : UserControl
     {
         _grid.DefaultCellStyle.SelectionBackColor = _isActivePanel ? _selectedBackgroundColor : _listBackgroundColor;
         _grid.DefaultCellStyle.SelectionForeColor = _isActivePanel ? _selectedTextColor : _fileTextColor;
+    }
+
+    private void ToggleEntrySelection(FileSystemEntry entry)
+    {
+        if (!_markedPaths.Add(entry.FullPath))
+        {
+            _markedPaths.Remove(entry.FullPath);
+        }
     }
 
     private void InitializeUi()
@@ -716,6 +766,11 @@ internal sealed class FilePanel : UserControl
             {
                 args.SuppressKeyPress = true;
                 ToggleFocusedSelectionAndMoveNext();
+            }
+            else if (args.KeyCode == Keys.Space)
+            {
+                args.SuppressKeyPress = true;
+                _ = ToggleFocusedSelectionAndCalculateDirectorySizeAsync();
             }
         };
 
@@ -1023,13 +1078,13 @@ internal sealed class FilePanel : UserControl
     {
         var files = _entries.Count(entry => !entry.IsParent && !entry.IsDirectory);
         var folders = _entries.Count(entry => !entry.IsParent && entry.IsDirectory);
-        var bytes = _entries.Where(entry => !entry.IsDirectory && entry.Size is not null).Sum(entry => entry.Size!.Value);
+        var bytes = _entries.Where(entry => !entry.IsParent && entry.Size is not null).Sum(entry => entry.Size!.Value);
         var selected = SelectedEntries;
         if (warning is null && selected.Count > 0)
         {
             var selectedFiles = selected.Count(entry => !entry.IsDirectory);
             var selectedFolders = selected.Count(entry => entry.IsDirectory);
-            var selectedBytes = selected.Where(entry => !entry.IsDirectory && entry.Size is not null).Sum(entry => entry.Size!.Value);
+            var selectedBytes = selected.Where(entry => entry.Size is not null).Sum(entry => entry.Size!.Value);
             _statusLabel.Text = $"выделено: {FormatKb(selectedBytes)} Кб, файлов: {selectedFiles}, папок: {selectedFolders}";
             return;
         }
@@ -1094,6 +1149,37 @@ internal sealed class FilePanel : UserControl
             errors.Add(ex.Message);
             return Array.Empty<FileInfo>();
         }
+    }
+
+    private static long CountDirectoryBytes(string directory)
+    {
+        long size = 0;
+
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(directory))
+            {
+                try
+                {
+                    size += new FileInfo(file).Length;
+                }
+                catch
+                {
+                    // Ignore files that disappeared or are inaccessible while size is being counted.
+                }
+            }
+
+            foreach (var childDirectory in Directory.EnumerateDirectories(directory))
+            {
+                size += CountDirectoryBytes(childDirectory);
+            }
+        }
+        catch
+        {
+            // Ignore inaccessible directories; Total Commander style size calculation should keep going.
+        }
+
+        return size;
     }
 
     private static string FormatKb(long bytes)

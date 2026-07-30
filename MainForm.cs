@@ -362,6 +362,13 @@ internal sealed class MainForm : Form
             case Keys.Insert:
                 _activePanel.ToggleFocusedSelectionAndMoveNext();
                 return true;
+            case Keys.Space:
+                if (!IsInputControlFocused())
+                {
+                    _ = _activePanel.ToggleFocusedSelectionAndCalculateDirectorySizeAsync();
+                    return true;
+                }
+                break;
             case Keys.Add:
                 ShowSelectionMaskDialog(true);
                 return true;
