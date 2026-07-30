@@ -132,9 +132,6 @@ internal static class FileOperations
     {
         return Task.Run(() =>
         {
-            var total = Math.Max(1, CountEntries(entries));
-            var current = 0;
-
             if (File.Exists(zipPath))
             {
                 File.Delete(zipPath);
@@ -144,17 +141,21 @@ internal static class FileOperations
             using var zipStream = new FileStream(zipPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
             using var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, false, Encoding.UTF8);
             var zipFullPath = Path.GetFullPath(zipPath);
+            var state = new TransferProgressState(
+                progress,
+                Math.Max(1, CountEntries(entries)),
+                CountBytes(entries));
 
             foreach (var entry in entries)
             {
                 token.ThrowIfCancellationRequested();
                 if (entry.IsDirectory)
                 {
-                    AddDirectoryToZip(archive, entry.FullPath, entry.Name, zipFullPath, progress, token, ref current, total);
+                    AddDirectoryToZip(archive, entry.FullPath, entry.Name, zipFullPath, state, token);
                 }
                 else
                 {
-                    AddFileToZip(archive, entry.FullPath, entry.Name, zipFullPath, progress, token, ref current, total);
+                    AddFileToZip(archive, entry.FullPath, entry.Name, zipFullPath, state, token);
                 }
             }
         }, token);
@@ -333,7 +334,7 @@ internal static class FileOperations
         state.Report(sourceFile, force: true);
     }
 
-    private static void AddDirectoryToZip(ZipArchive archive, string sourceDirectory, string relativeRoot, string zipPath, IProgress<OperationProgress> progress, CancellationToken token, ref int current, int total)
+    private static void AddDirectoryToZip(ZipArchive archive, string sourceDirectory, string relativeRoot, string zipPath, TransferProgressState state, CancellationToken token)
     {
         var hadEntries = false;
         foreach (var file in SafeFiles(sourceDirectory))
@@ -341,25 +342,24 @@ internal static class FileOperations
             token.ThrowIfCancellationRequested();
             hadEntries = true;
             var relativePath = Path.Combine(relativeRoot, Path.GetFileName(file));
-            AddFileToZip(archive, file, relativePath, zipPath, progress, token, ref current, total);
+            AddFileToZip(archive, file, relativePath, zipPath, state, token);
         }
 
         foreach (var directory in SafeDirectories(sourceDirectory))
         {
             token.ThrowIfCancellationRequested();
             hadEntries = true;
-            AddDirectoryToZip(archive, directory, Path.Combine(relativeRoot, Path.GetFileName(directory)), zipPath, progress, token, ref current, total);
+            AddDirectoryToZip(archive, directory, Path.Combine(relativeRoot, Path.GetFileName(directory)), zipPath, state, token);
         }
 
         if (!hadEntries)
         {
             archive.CreateEntry(NormalizeZipName(relativeRoot) + "/");
-            current++;
-            progress.Report(new OperationProgress(Math.Min(current, total), total, relativeRoot));
+            state.CompleteItem(relativeRoot);
         }
     }
 
-    private static void AddFileToZip(ZipArchive archive, string sourceFile, string relativePath, string zipPath, IProgress<OperationProgress> progress, CancellationToken token, ref int current, int total)
+    private static void AddFileToZip(ZipArchive archive, string sourceFile, string relativePath, string zipPath, TransferProgressState state, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         if (string.Equals(Path.GetFullPath(sourceFile), zipPath, StringComparison.OrdinalIgnoreCase))
@@ -367,9 +367,27 @@ internal static class FileOperations
             return;
         }
 
-        archive.CreateEntryFromFile(sourceFile, NormalizeZipName(relativePath), CompressionLevel.Optimal);
-        current++;
-        progress.Report(new OperationProgress(Math.Min(current, total), total, relativePath));
+        var buffer = new byte[TransferBufferSize];
+        var entry = archive.CreateEntry(NormalizeZipName(relativePath), CompressionLevel.Optimal);
+        state.Report(relativePath, force: true);
+
+        using var source = new FileStream(sourceFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, TransferBufferSize, FileOptions.SequentialScan);
+        using var destination = entry.Open();
+
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            var read = source.Read(buffer, 0, buffer.Length);
+            if (read == 0)
+            {
+                break;
+            }
+
+            destination.Write(buffer, 0, read);
+            state.AddCompletedBytes(read, relativePath);
+        }
+
+        state.CompleteItem(relativePath);
     }
 
     private static string GetSafeExtractPath(string destinationRoot, string entryName)

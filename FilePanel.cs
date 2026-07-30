@@ -6,6 +6,7 @@ namespace AzertyCommander;
 
 internal sealed class FilePanel : UserControl
 {
+    private const string PreferredDropEffectFormat = "Preferred DropEffect";
     private readonly ComboBox _driveBox = new();
     private readonly Button _favoritesButton = new();
     private readonly Button _favoritesDropButton = new();
@@ -746,7 +747,8 @@ internal sealed class FilePanel : UserControl
             if (paths.Length > 0)
             {
                 var data = new DataObject(DataFormats.FileDrop, paths);
-                var result = _grid.DoDragDrop(data, DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link);
+                SetPreferredDropEffect(data, DragDropEffects.Copy);
+                var result = _grid.DoDragDrop(data, DragDropEffects.Copy | DragDropEffects.Move);
                 if (result is DragDropEffects.Move or DragDropEffects.Copy)
                 {
                     RefreshList();
@@ -814,7 +816,7 @@ internal sealed class FilePanel : UserControl
         }
 
         var targetDirectory = GetDropTargetDirectory(args, useGridHitTest);
-        args.Effect = ChooseDropEffect(args, paths, targetDirectory);
+        args.Effect = ChooseDropEffect(args, targetDirectory);
     }
 
     private void HandleFileDragDrop(DragEventArgs args, bool useGridHitTest)
@@ -827,7 +829,7 @@ internal sealed class FilePanel : UserControl
         }
 
         var targetDirectory = GetDropTargetDirectory(args, useGridHitTest);
-        var effect = ChooseDropEffect(args, paths, targetDirectory);
+        var effect = ChooseDropEffect(args, targetDirectory);
         args.Effect = effect;
         if (effect is not (DragDropEffects.Copy or DragDropEffects.Move))
         {
@@ -870,7 +872,12 @@ internal sealed class FilePanel : UserControl
         return paths.Length > 0;
     }
 
-    private static DragDropEffects ChooseDropEffect(DragEventArgs args, IReadOnlyList<string> paths, string targetDirectory)
+    private static void SetPreferredDropEffect(DataObject data, DragDropEffects effect)
+    {
+        data.SetData(PreferredDropEffectFormat, new MemoryStream(BitConverter.GetBytes((int)effect)));
+    }
+
+    private static DragDropEffects ChooseDropEffect(DragEventArgs args, string targetDirectory)
     {
         if (string.IsNullOrWhiteSpace(targetDirectory) || !Directory.Exists(targetDirectory))
         {
@@ -885,37 +892,17 @@ internal sealed class FilePanel : UserControl
         }
 
         var shiftPressed = (args.KeyState & 4) == 4;
-        var controlPressed = (args.KeyState & 8) == 8;
         if (shiftPressed && canMove)
         {
             return DragDropEffects.Move;
         }
 
-        if (controlPressed && canCopy)
+        if (canCopy)
         {
             return DragDropEffects.Copy;
         }
 
-        if (canMove && IsSameRoot(paths, targetDirectory))
-        {
-            return DragDropEffects.Move;
-        }
-
-        return canCopy ? DragDropEffects.Copy : DragDropEffects.Move;
-    }
-
-    private static bool IsSameRoot(IReadOnlyList<string> paths, string targetDirectory)
-    {
-        try
-        {
-            var targetRoot = Path.GetPathRoot(Path.GetFullPath(targetDirectory));
-            return !string.IsNullOrWhiteSpace(targetRoot) &&
-                paths.All(path => string.Equals(Path.GetPathRoot(Path.GetFullPath(path)), targetRoot, StringComparison.OrdinalIgnoreCase));
-        }
-        catch
-        {
-            return false;
-        }
+        return canMove ? DragDropEffects.Move : DragDropEffects.None;
     }
 
     private void ActivatePanel()

@@ -90,10 +90,17 @@ internal static class SelfTest
             }
 
             var zipPath = Path.Combine(root, "packed.zip");
-            FileOperations.CreateZipAsync(entries, zipPath, progress, CancellationToken.None).GetAwaiter().GetResult();
+            var zipProgress = new RecordedProgress();
+            FileOperations.CreateZipAsync(entries, zipPath, zipProgress, CancellationToken.None).GetAwaiter().GetResult();
             if (!File.Exists(zipPath))
             {
                 Console.Error.WriteLine("ZIP create check failed.");
+                return false;
+            }
+
+            if (!zipProgress.Items.Any(item => item.BytesDone > 0 && item.BytesTotal >= 10))
+            {
+                Console.Error.WriteLine("ZIP byte progress check failed.");
                 return false;
             }
 
