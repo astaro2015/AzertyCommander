@@ -26,11 +26,17 @@ internal static class SelfTest
                 new FileSystemEntry("folder", Path.Combine(left, "folder"), true, false, null, DateTime.Now, FileAttributes.Directory)
             };
 
-            var progress = new Progress<OperationProgress>(_ => { });
+            var progress = new RecordedProgress();
             FileOperations.CopyAsync(entries, right, progress, CancellationToken.None).GetAwaiter().GetResult();
             if (!File.Exists(Path.Combine(right, "one.txt")) || !File.Exists(Path.Combine(right, "folder", "two.txt")))
             {
                 Console.Error.WriteLine("Copy check failed.");
+                return false;
+            }
+
+            if (!progress.Items.Any(item => item.BytesTotal >= 10 && item.BytesDone > 0))
+            {
+                Console.Error.WriteLine("Copy byte progress check failed.");
                 return false;
             }
 
@@ -455,6 +461,16 @@ internal static class SelfTest
         catch
         {
             return false;
+        }
+    }
+
+    private sealed class RecordedProgress : IProgress<OperationProgress>
+    {
+        public List<OperationProgress> Items { get; } = new();
+
+        public void Report(OperationProgress value)
+        {
+            Items.Add(value);
         }
     }
 }

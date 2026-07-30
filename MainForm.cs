@@ -781,7 +781,7 @@ internal sealed class MainForm : Form
         using var progressForm = new ProgressForm("Сравнение файлов");
         progressForm.CancelRequested += (_, _) => cancellation.Cancel();
         var progress = new Progress<OperationProgress>(progressForm.SetProgress);
-        progressForm.Show(this);
+        progressForm.ShowCentered(this);
 
         try
         {
@@ -1546,7 +1546,7 @@ internal sealed class MainForm : Form
         using var progressForm = new ProgressForm(title);
         progressForm.CancelRequested += (_, _) => cancellation.Cancel();
         var progress = new Progress<OperationProgress>(progressForm.SetProgress);
-        progressForm.Show(this);
+        progressForm.ShowCentered(this);
 
         try
         {

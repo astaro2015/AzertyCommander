@@ -6,6 +6,7 @@ namespace AzertyCommander;
 internal static class FileOperations
 {
     private const int CompareBufferSize = 1024 * 1024;
+    private const int TransferBufferSize = 1024 * 1024;
     private static readonly Encoding[] ZipNameEncodings =
     [
         Encoding.UTF8,
@@ -19,19 +20,21 @@ internal static class FileOperations
         return Task.Run(() =>
         {
             var operations = PrepareOperationItems(entries, targetDirectory);
-            var total = Math.Max(1, CountEntries(operations.Select(operation => operation.Entry)));
-            var current = 0;
+            var state = new TransferProgressState(
+                progress,
+                Math.Max(1, CountEntries(operations.Select(operation => operation.Entry))),
+                CountBytes(operations.Select(operation => operation.Entry)));
 
             foreach (var (entry, destination) in operations)
             {
                 token.ThrowIfCancellationRequested();
                 if (entry.IsDirectory)
                 {
-                    CopyDirectory(entry.FullPath, destination, progress, token, ref current, total);
+                    CopyDirectory(entry.FullPath, destination, state, token);
                 }
                 else
                 {
-                    CopyFile(entry.FullPath, destination, progress, token, ref current, total);
+                    CopyFile(entry.FullPath, destination, state, token);
                 }
             }
         }, token);
@@ -93,7 +96,7 @@ internal static class FileOperations
 
                 processed += leftRead;
                 var progressValue = (int)Math.Clamp(processed * 1000 / leftInfo.Length, 0, 1000);
-                progress.Report(new OperationProgress(progressValue, 1000, $"Сравнение: {FormatBytes(processed)} из {FormatBytes(leftInfo.Length)}"));
+                progress.Report(new OperationProgress(progressValue, 1000, $"Сравнение: {FormatBytes(processed)} из {FormatBytes(leftInfo.Length)}", processed, leftInfo.Length));
             }
 
             return new FileCompareResult(true, leftInfo.Length, rightInfo.Length, null);
@@ -105,19 +108,21 @@ internal static class FileOperations
         return Task.Run(() =>
         {
             var operations = PrepareOperationItems(entries, targetDirectory);
-            var total = Math.Max(1, CountEntries(operations.Select(operation => operation.Entry)));
-            var current = 0;
+            var state = new TransferProgressState(
+                progress,
+                Math.Max(1, CountEntries(operations.Select(operation => operation.Entry))),
+                CountBytes(operations.Select(operation => operation.Entry)));
 
             foreach (var (entry, destination) in operations)
             {
                 token.ThrowIfCancellationRequested();
                 if (entry.IsDirectory)
                 {
-                    MoveDirectory(entry.FullPath, destination, progress, token, ref current, total);
+                    MoveDirectory(entry.FullPath, destination, state, token);
                 }
                 else
                 {
-                    MoveFile(entry.FullPath, destination, progress, token, ref current, total);
+                    MoveFile(entry.FullPath, destination, state, token);
                 }
             }
         }, token);
@@ -231,35 +236,33 @@ internal static class FileOperations
         return operations;
     }
 
-    private static void CopyDirectory(string sourceDirectory, string destinationDirectory, IProgress<OperationProgress> progress, CancellationToken token, ref int current, int total)
+    private static void CopyDirectory(string sourceDirectory, string destinationDirectory, TransferProgressState state, CancellationToken token)
     {
         Directory.CreateDirectory(destinationDirectory);
-        current++;
-        progress.Report(new OperationProgress(Math.Min(current, total), total, sourceDirectory));
+        state.CompleteItem(sourceDirectory);
 
         foreach (var file in SafeFiles(sourceDirectory))
         {
             token.ThrowIfCancellationRequested();
-            CopyFile(file, Path.Combine(destinationDirectory, Path.GetFileName(file)), progress, token, ref current, total);
+            CopyFile(file, Path.Combine(destinationDirectory, Path.GetFileName(file)), state, token);
         }
 
         foreach (var directory in SafeDirectories(sourceDirectory))
         {
             token.ThrowIfCancellationRequested();
-            CopyDirectory(directory, Path.Combine(destinationDirectory, Path.GetFileName(directory)), progress, token, ref current, total);
+            CopyDirectory(directory, Path.Combine(destinationDirectory, Path.GetFileName(directory)), state, token);
         }
     }
 
-    private static void CopyFile(string sourceFile, string destinationFile, IProgress<OperationProgress> progress, CancellationToken token, ref int current, int total)
+    private static void CopyFile(string sourceFile, string destinationFile, TransferProgressState state, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.GetDirectoryName(destinationFile) ?? ".");
-        File.Copy(sourceFile, destinationFile, true);
-        current++;
-        progress.Report(new OperationProgress(Math.Min(current, total), total, sourceFile));
+        CopyFileWithProgress(sourceFile, destinationFile, state, token);
+        state.CompleteItem(sourceFile);
     }
 
-    private static void MoveDirectory(string sourceDirectory, string destinationDirectory, IProgress<OperationProgress> progress, CancellationToken token, ref int current, int total)
+    private static void MoveDirectory(string sourceDirectory, string destinationDirectory, TransferProgressState state, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
 
@@ -267,9 +270,11 @@ internal static class FileOperations
         {
             if (!Directory.Exists(destinationDirectory))
             {
+                var bytes = CountDirectoryBytes(sourceDirectory);
+                var items = Math.Max(1, CountDirectoryEntries(sourceDirectory));
                 Directory.Move(sourceDirectory, destinationDirectory);
-                current += Math.Max(1, CountDirectoryEntries(destinationDirectory));
-                progress.Report(new OperationProgress(Math.Min(current, total), total, sourceDirectory));
+                state.AddCompletedBytes(bytes, sourceDirectory, force: true);
+                state.CompleteItems(items, sourceDirectory);
                 return;
             }
         }
@@ -278,27 +283,54 @@ internal static class FileOperations
             // Cross-volume moves and existing targets fall back to copy + delete.
         }
 
-        CopyDirectory(sourceDirectory, destinationDirectory, progress, token, ref current, total);
+        CopyDirectory(sourceDirectory, destinationDirectory, state, token);
         Directory.Delete(sourceDirectory, true);
     }
 
-    private static void MoveFile(string sourceFile, string destinationFile, IProgress<OperationProgress> progress, CancellationToken token, ref int current, int total)
+    private static void MoveFile(string sourceFile, string destinationFile, TransferProgressState state, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.GetDirectoryName(destinationFile) ?? ".");
 
         try
         {
+            var bytes = GetFileLength(sourceFile);
             File.Move(sourceFile, destinationFile, true);
+            state.AddCompletedBytes(bytes, sourceFile, force: true);
+            state.CompleteItem(sourceFile);
+            return;
         }
         catch
         {
-            File.Copy(sourceFile, destinationFile, true);
+            CopyFileWithProgress(sourceFile, destinationFile, state, token);
             File.Delete(sourceFile);
         }
 
-        current++;
-        progress.Report(new OperationProgress(Math.Min(current, total), total, sourceFile));
+        state.CompleteItem(sourceFile);
+    }
+
+    private static void CopyFileWithProgress(string sourceFile, string destinationFile, TransferProgressState state, CancellationToken token)
+    {
+        var buffer = new byte[TransferBufferSize];
+        state.Report(sourceFile, force: true);
+
+        using var source = new FileStream(sourceFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, TransferBufferSize, FileOptions.SequentialScan);
+        using var destination = new FileStream(destinationFile, FileMode.Create, FileAccess.Write, FileShare.None, TransferBufferSize, FileOptions.SequentialScan);
+
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            var read = source.Read(buffer, 0, buffer.Length);
+            if (read == 0)
+            {
+                break;
+            }
+
+            destination.Write(buffer, 0, read);
+            state.AddCompletedBytes(read, sourceFile);
+        }
+
+        state.Report(sourceFile, force: true);
     }
 
     private static void AddDirectoryToZip(ZipArchive archive, string sourceDirectory, string relativeRoot, string zipPath, IProgress<OperationProgress> progress, CancellationToken token, ref int current, int total)
@@ -362,6 +394,17 @@ internal static class FileOperations
         return entries.Sum(entry => entry.IsDirectory ? CountDirectoryEntries(entry.FullPath) : 1);
     }
 
+    private static long CountBytes(IEnumerable<FileSystemEntry> entries)
+    {
+        long total = 0;
+        foreach (var entry in entries)
+        {
+            total += entry.IsDirectory ? CountDirectoryBytes(entry.FullPath) : GetFileLength(entry.FullPath);
+        }
+
+        return total;
+    }
+
     private static int CountDirectoryEntries(string directory)
     {
         var count = 1;
@@ -377,6 +420,35 @@ internal static class FileOperations
         }
 
         return count;
+    }
+
+    private static long CountDirectoryBytes(string directory)
+    {
+        long bytes = 0;
+
+        foreach (var file in SafeFiles(directory))
+        {
+            bytes += GetFileLength(file);
+        }
+
+        foreach (var childDirectory in SafeDirectories(directory))
+        {
+            bytes += CountDirectoryBytes(childDirectory);
+        }
+
+        return bytes;
+    }
+
+    private static long GetFileLength(string file)
+    {
+        try
+        {
+            return new FileInfo(file).Length;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     private static int CountZipEntries(IEnumerable<string> zipPaths)
@@ -578,5 +650,67 @@ internal static class FileOperations
         return path.EndsWith(Path.DirectorySeparatorChar)
             ? path
             : path + Path.DirectorySeparatorChar;
+    }
+
+    private sealed class TransferProgressState
+    {
+        private const int ProgressScale = 10_000;
+        private readonly IProgress<OperationProgress> _progress;
+        private readonly int _itemsTotal;
+        private readonly long _bytesTotal;
+        private DateTime _lastReportUtc = DateTime.MinValue;
+        private int _itemsDone;
+        private long _bytesDone;
+
+        public TransferProgressState(IProgress<OperationProgress> progress, int itemsTotal, long bytesTotal)
+        {
+            _progress = progress;
+            _itemsTotal = Math.Max(1, itemsTotal);
+            _bytesTotal = Math.Max(0, bytesTotal);
+        }
+
+        public void AddCompletedBytes(long bytes, string message, bool force = false)
+        {
+            if (bytes > 0)
+            {
+                _bytesDone = Math.Min(_bytesTotal, _bytesDone + bytes);
+            }
+
+            Report(message, force);
+        }
+
+        public void CompleteItem(string message)
+        {
+            CompleteItems(1, message);
+        }
+
+        public void CompleteItems(int count, string message)
+        {
+            if (count > 0)
+            {
+                _itemsDone = Math.Min(_itemsTotal, _itemsDone + count);
+            }
+
+            Report(message, force: true);
+        }
+
+        public void Report(string message, bool force = false)
+        {
+            var now = DateTime.UtcNow;
+            if (!force && (now - _lastReportUtc).TotalMilliseconds < 120)
+            {
+                return;
+            }
+
+            _lastReportUtc = now;
+            if (_bytesTotal > 0)
+            {
+                var current = (int)Math.Clamp(_bytesDone * ProgressScale / _bytesTotal, 0, ProgressScale);
+                _progress.Report(new OperationProgress(current, ProgressScale, message, _bytesDone, _bytesTotal));
+                return;
+            }
+
+            _progress.Report(new OperationProgress(Math.Min(_itemsDone, _itemsTotal), _itemsTotal, message));
+        }
     }
 }
