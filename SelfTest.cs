@@ -132,6 +132,33 @@ internal static class SelfTest
                 return false;
             }
 
+            var deleteRoot = Path.Combine(root, "delete-me");
+            Directory.CreateDirectory(Path.Combine(deleteRoot, "child"));
+            File.WriteAllText(Path.Combine(deleteRoot, "a.txt"), "a");
+            File.WriteAllText(Path.Combine(deleteRoot, "child", "b.txt"), "bb");
+            var deleteProgress = new RecordedProgress();
+            FileOperations.DeleteAsync(
+                new[]
+                {
+                    new FileSystemEntry(
+                        "delete-me",
+                        deleteRoot,
+                        true,
+                        false,
+                        null,
+                        Directory.GetLastWriteTime(deleteRoot),
+                        FileAttributes.Directory)
+                },
+                permanent: true,
+                deleteProgress,
+                CancellationToken.None).GetAwaiter().GetResult();
+            if (Directory.Exists(deleteRoot) ||
+                !deleteProgress.Items.Any(item => item.Total >= 3 && item.Current > 0))
+            {
+                Console.Error.WriteLine("Permanent folder delete progress check failed.");
+                return false;
+            }
+
             if (!ShellContextMenu.CanCreateForPaths(new[] { Path.Combine(left, "one.txt") }))
             {
                 Console.Error.WriteLine("Shell context menu check failed.");

@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text;
+using Microsoft.VisualBasic.FileIO;
 
 namespace AzertyCommander;
 
@@ -124,6 +125,29 @@ internal static class FileOperations
                 {
                     MoveFile(entry.FullPath, destination, state, token);
                 }
+            }
+        }, token);
+    }
+
+    public static Task DeleteAsync(IReadOnlyList<FileSystemEntry> entries, bool permanent, IProgress<OperationProgress> progress, CancellationToken token)
+    {
+        return Task.Run(() =>
+        {
+            var items = entries
+                .Where(entry => !entry.IsParent && !entry.IsRemote)
+                .ToList();
+            if (items.Count == 0)
+            {
+                return;
+            }
+
+            if (permanent)
+            {
+                DeletePermanently(items, progress, token);
+            }
+            else
+            {
+                MoveToRecycleBin(items, progress, token);
             }
         }, token);
     }
@@ -388,6 +412,145 @@ internal static class FileOperations
         }
 
         state.CompleteItem(relativePath);
+    }
+
+    private static void DeletePermanently(IReadOnlyList<FileSystemEntry> entries, IProgress<OperationProgress> progress, CancellationToken token)
+    {
+        progress.Report(new OperationProgress(0, 0, "Подсчет элементов для удаления..."));
+        var total = Math.Max(1, entries.Sum(entry => CountDeleteEntries(entry.FullPath, entry.IsDirectory, token)));
+        var state = new ItemProgressState(progress, total);
+        state.Report("Удаление...", force: true);
+
+        foreach (var entry in entries)
+        {
+            token.ThrowIfCancellationRequested();
+            if (entry.IsDirectory)
+            {
+                DeleteDirectoryPermanently(entry.FullPath, state, token);
+            }
+            else
+            {
+                DeleteFilePermanently(entry.FullPath, state, token);
+            }
+        }
+    }
+
+    private static void MoveToRecycleBin(IReadOnlyList<FileSystemEntry> entries, IProgress<OperationProgress> progress, CancellationToken token)
+    {
+        var total = Math.Max(1, entries.Count);
+        var current = 0;
+
+        foreach (var entry in entries)
+        {
+            token.ThrowIfCancellationRequested();
+            progress.Report(new OperationProgress(0, 0, "В корзину: " + entry.FullPath));
+            if (entry.IsDirectory)
+            {
+                Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(
+                    entry.FullPath,
+                    UIOption.OnlyErrorDialogs,
+                    RecycleOption.SendToRecycleBin,
+                    UICancelOption.ThrowException);
+            }
+            else
+            {
+                Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(
+                    entry.FullPath,
+                    UIOption.OnlyErrorDialogs,
+                    RecycleOption.SendToRecycleBin,
+                    UICancelOption.ThrowException);
+            }
+
+            current++;
+            progress.Report(new OperationProgress(current, total, entry.Name));
+        }
+    }
+
+    private static int CountDeleteEntries(string path, bool isDirectory, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!isDirectory || File.Exists(path))
+        {
+            return File.Exists(path) ? 1 : 0;
+        }
+
+        if (!Directory.Exists(path))
+        {
+            return 0;
+        }
+
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            return 1;
+        }
+
+        var count = 1;
+        foreach (var file in Directory.EnumerateFiles(path))
+        {
+            token.ThrowIfCancellationRequested();
+            count++;
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(path))
+        {
+            count += CountDeleteEntries(directory, isDirectory: true, token);
+        }
+
+        return count;
+    }
+
+    private static void DeleteDirectoryPermanently(string directory, ItemProgressState state, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!Directory.Exists(directory))
+        {
+            state.Complete(directory);
+            return;
+        }
+
+        var attributes = File.GetAttributes(directory);
+        if ((attributes & FileAttributes.ReparsePoint) == 0)
+        {
+            foreach (var file in Directory.EnumerateFiles(directory))
+            {
+                DeleteFilePermanently(file, state, token);
+            }
+
+            foreach (var childDirectory in Directory.EnumerateDirectories(directory))
+            {
+                DeleteDirectoryPermanently(childDirectory, state, token);
+            }
+        }
+
+        token.ThrowIfCancellationRequested();
+        TrySetNormalAttributes(directory);
+        Directory.Delete(directory, recursive: false);
+        state.Complete(directory);
+    }
+
+    private static void DeleteFilePermanently(string file, ItemProgressState state, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (File.Exists(file))
+        {
+            TrySetNormalAttributes(file);
+            File.Delete(file);
+        }
+
+        state.Complete(file);
+    }
+
+    private static void TrySetNormalAttributes(string path)
+    {
+        try
+        {
+            File.SetAttributes(path, FileAttributes.Normal);
+        }
+        catch
+        {
+            // Deletion will report the real error if attributes cannot be changed.
+        }
     }
 
     private static string GetSafeExtractPath(string destinationRoot, string entryName)
@@ -668,6 +831,38 @@ internal static class FileOperations
         return path.EndsWith(Path.DirectorySeparatorChar)
             ? path
             : path + Path.DirectorySeparatorChar;
+    }
+
+    private sealed class ItemProgressState
+    {
+        private readonly IProgress<OperationProgress> _progress;
+        private readonly int _total;
+        private DateTime _lastReportUtc = DateTime.MinValue;
+        private int _current;
+
+        public ItemProgressState(IProgress<OperationProgress> progress, int total)
+        {
+            _progress = progress;
+            _total = Math.Max(1, total);
+        }
+
+        public void Complete(string message)
+        {
+            _current = Math.Min(_total, _current + 1);
+            Report(message, force: _current == _total);
+        }
+
+        public void Report(string message, bool force = false)
+        {
+            var now = DateTime.UtcNow;
+            if (!force && (now - _lastReportUtc).TotalMilliseconds < 120)
+            {
+                return;
+            }
+
+            _lastReportUtc = now;
+            _progress.Report(new OperationProgress(Math.Min(_current, _total), _total, message));
+        }
     }
 
     private sealed class TransferProgressState

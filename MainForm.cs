@@ -1,5 +1,3 @@
-using Microsoft.VisualBasic.FileIO;
-
 namespace AzertyCommander;
 
 internal sealed class MainForm : Form
@@ -1364,7 +1362,7 @@ internal sealed class MainForm : Form
         _activePanel.SelectPath(newPath);
     }
 
-    private void DeleteSelected(bool permanent)
+    private async void DeleteSelected(bool permanent)
     {
         if (_activePanel.IsFtpMode)
         {
@@ -1386,34 +1384,10 @@ internal sealed class MainForm : Form
             return;
         }
 
-        try
-        {
-            foreach (var entry in entries)
-            {
-                if (entry.IsDirectory)
-                {
-                    Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(
-                        entry.FullPath,
-                        UIOption.OnlyErrorDialogs,
-                        RecycleOptionFor(permanent),
-                        UICancelOption.ThrowException);
-                }
-                else
-                {
-                    Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(
-                        entry.FullPath,
-                        UIOption.OnlyErrorDialogs,
-                        RecycleOptionFor(permanent),
-                        UICancelOption.ThrowException);
-                }
-            }
-
-            _activePanel.RefreshList();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, "Удаление", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
+        await RunOperationAsync(
+            permanent ? "Удаление безвозвратно" : "Удаление в корзину",
+            token => FileOperations.DeleteAsync(entries, permanent, token.Progress, token.CancellationToken));
+        _activePanel.RefreshList();
     }
 
     private async Task DeleteFtpSelectedAsync()
@@ -2212,11 +2186,6 @@ internal sealed class MainForm : Form
         {
             progressForm.Close();
         }
-    }
-
-    private static RecycleOption RecycleOptionFor(bool permanent)
-    {
-        return permanent ? RecycleOption.DeletePermanently : RecycleOption.SendToRecycleBin;
     }
 
     private void ShowAbout()

@@ -55,8 +55,19 @@ internal sealed class ProgressForm : Form
             return;
         }
 
-        _progressBar.Maximum = Math.Max(1, progress.Total);
-        _progressBar.Value = Math.Min(Math.Max(0, progress.Current), _progressBar.Maximum);
+        if (progress.Total <= 0 && progress.BytesTotal <= 0)
+        {
+            _progressBar.Style = ProgressBarStyle.Marquee;
+            _progressBar.Maximum = 1;
+            _progressBar.Value = 0;
+        }
+        else
+        {
+            _progressBar.Style = ProgressBarStyle.Blocks;
+            _progressBar.Maximum = Math.Max(1, progress.Total);
+            _progressBar.Value = Math.Min(Math.Max(0, progress.Current), _progressBar.Maximum);
+        }
+
         _messageLabel.Text = progress.Message;
         _detailLabel.Text = BuildDetailText(progress);
     }
@@ -83,6 +94,11 @@ internal sealed class ProgressForm : Form
     {
         if (progress.BytesTotal <= 0)
         {
+            if (progress.Total <= 0)
+            {
+                return "выполняется...";
+            }
+
             return $"{progress.Current:N0} из {progress.Total:N0}";
         }
 
