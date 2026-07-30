@@ -13,6 +13,19 @@ internal static class ToolbarIconFactory
         g.FillPolygon(brush, new[] { new Point(12, 3), new Point(21, 12), new Point(16, 12), new Point(16, 21), new Point(8, 21), new Point(8, 12), new Point(3, 12) });
     });
 
+    public static Image SelectAdd() => Create(Color.FromArgb(32, 151, 215), (g, pen, brush) =>
+    {
+        g.DrawRectangle(pen, 5, 5, 14, 14);
+        g.DrawLine(pen, 12, 8, 12, 16);
+        g.DrawLine(pen, 8, 12, 16, 12);
+    });
+
+    public static Image SelectRemove() => Create(Color.FromArgb(32, 151, 215), (g, pen, brush) =>
+    {
+        g.DrawRectangle(pen, 5, 5, 14, 14);
+        g.DrawLine(pen, 8, 12, 16, 12);
+    });
+
     public static Image View() => Create(Color.FromArgb(52, 128, 184), (g, pen, brush) =>
     {
         g.DrawRectangle(pen, 5, 3, 12, 18);

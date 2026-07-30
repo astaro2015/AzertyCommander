@@ -6,6 +6,7 @@ internal sealed class AppSettings
     public AppWindowSettings Window { get; set; } = new();
     public AppPanelSettings LeftPanel { get; set; } = new();
     public AppPanelSettings RightPanel { get; set; } = new();
+    public List<string> FavoriteDirectories { get; set; } = new();
     public List<FtpConnectionProfile> FtpConnections { get; set; } = new();
     public List<string> FtpConnectionGroups { get; set; } = new();
 }

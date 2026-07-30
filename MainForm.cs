@@ -7,7 +7,8 @@ internal sealed class MainForm : Form
     private readonly AppSettings _settings = AppSettingsStore.Load();
     private readonly FilePanel _leftPanel = new();
     private readonly FilePanel _rightPanel = new();
-    private readonly ToolStripStatusLabel _statusLabel = new();
+    private readonly Label _commandPathLabel = new();
+    private readonly ToolTip _toolTip = new();
     private readonly TextBox _commandBox = new();
     private readonly SplitContainer _splitContainer = new();
     private readonly ToolStrip _quickLaunchToolbar = new();
@@ -80,9 +81,12 @@ internal sealed class MainForm : Form
         root.Controls.Add(_splitContainer, 0, 2);
 
         var commandRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(4, 5, 4, 5) };
-        commandRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
+        commandRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 330));
         commandRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        commandRow.Controls.Add(new Label { Text = "Командная строка:", TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill }, 0, 0);
+        _commandPathLabel.TextAlign = ContentAlignment.MiddleRight;
+        _commandPathLabel.Dock = DockStyle.Fill;
+        _commandPathLabel.AutoEllipsis = true;
+        commandRow.Controls.Add(_commandPathLabel, 0, 0);
         _commandBox.Dock = DockStyle.Fill;
         _commandBox.KeyDown += (_, args) =>
         {
@@ -101,17 +105,7 @@ internal sealed class MainForm : Form
         root.Controls.Add(commandRow, 0, 3);
 
         root.Controls.Add(BuildFunctionBar(), 0, 4);
-
-        var statusStrip = new StatusStrip
-        {
-            AutoSize = false,
-            Height = 28,
-            SizingGrip = true
-        };
-        statusStrip.Items.Add(_statusLabel);
         Controls.Add(root);
-        Controls.Add(statusStrip);
-        statusStrip.Dock = DockStyle.Bottom;
     }
 
     protected override void OnShown(EventArgs e)
@@ -169,10 +163,15 @@ internal sealed class MainForm : Form
         files.DropDownItems.Add(CreateMenuItem("Выход\tAlt+F4", (_, _) => Close()));
 
         var selection = new ToolStripMenuItem("Выделение");
+        selection.DropDownItems.Add(CreateMenuItem("Добавить выделение...\tNum+", (_, _) => ShowSelectionMaskDialog(true)));
+        selection.DropDownItems.Add(CreateMenuItem("Убрать выделение...\tNum-", (_, _) => ShowSelectionMaskDialog(false)));
+        selection.DropDownItems.Add(new ToolStripSeparator());
         selection.DropDownItems.Add(CreateMenuItem("Выделить всё\tCtrl+A", (_, _) => _activePanel.SelectAllItems()));
-        selection.DropDownItems.Add(CreateMenuItem("Снять выделение\tCtrl+D", (_, _) => _activePanel.ClearSelection()));
+        selection.DropDownItems.Add(CreateMenuItem("Снять выделение", (_, _) => _activePanel.ClearSelection()));
 
         var commands = new ToolStripMenuItem("Команды");
+        commands.DropDownItems.Add(CreateMenuItem("Избранные каталоги\tCtrl+D", (_, _) => _activePanel.ShowFavoritesMenu()));
+        commands.DropDownItems.Add(new ToolStripSeparator());
         commands.DropDownItems.Add(CreateMenuItem("Поиск\tCtrl+F", (_, _) => ShowSearch()));
         commands.DropDownItems.Add(CreateMenuItem("Сравнить файлы побайтово", async (_, _) => await CompareSelectedFilesAsync()));
         commands.DropDownItems.Add(new ToolStripSeparator());
@@ -235,6 +234,8 @@ internal sealed class MainForm : Form
 
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Обновить", ToolbarIconFactory.Refresh(), (_, _) => RefreshPanels()));
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Вверх", ToolbarIconFactory.Up(), (_, _) => _activePanel.NavigateUp()));
+        _quickLaunchToolbar.Items.Add(CreateQuickButton("Добавить выделение (Num+)", ToolbarIconFactory.SelectAdd(), (_, _) => ShowSelectionMaskDialog(true)));
+        _quickLaunchToolbar.Items.Add(CreateQuickButton("Убрать выделение (Num-)", ToolbarIconFactory.SelectRemove(), (_, _) => ShowSelectionMaskDialog(false)));
         _quickLaunchToolbar.Items.Add(new ToolStripSeparator());
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Просмотр текста (F3)", ToolbarIconFactory.View(), (_, _) => ViewText()));
         _quickLaunchToolbar.Items.Add(CreateQuickButton("Копировать (F5)", ToolbarIconFactory.Copy(), async (_, _) => await CopySelectedAsync()));
@@ -299,6 +300,8 @@ internal sealed class MainForm : Form
         _rightPanel.FilesDropped += async (_, args) => await DropFilesIntoPanelAsync(args);
         _leftPanel.ShellContextMenuRequested += (_, args) => ShowShellContextMenu(args);
         _rightPanel.ShellContextMenuRequested += (_, args) => ShowShellContextMenu(args);
+        _leftPanel.FavoritesMenuRequested += (_, args) => ShowFavoriteDirectoriesMenu(_leftPanel, args.ScreenLocation);
+        _rightPanel.FavoritesMenuRequested += (_, args) => ShowFavoriteDirectoriesMenu(_rightPanel, args.ScreenLocation);
     }
 
     private void LoadInitialPaths()
@@ -320,6 +323,10 @@ internal sealed class MainForm : Form
     {
         switch (keyData)
         {
+            case Keys.Tab:
+            case Keys.Shift | Keys.Tab:
+                ToggleActivePanel();
+                return true;
             case Keys.Control | Keys.Shift | Keys.Enter:
                 if (ActiveControl == _commandBox)
                 {
@@ -355,6 +362,12 @@ internal sealed class MainForm : Form
             case Keys.Insert:
                 _activePanel.ToggleFocusedSelectionAndMoveNext();
                 return true;
+            case Keys.Add:
+                ShowSelectionMaskDialog(true);
+                return true;
+            case Keys.Subtract:
+                ShowSelectionMaskDialog(false);
+                return true;
             case Keys.BrowserBack:
                 _activePanel.NavigateUp();
                 return true;
@@ -389,7 +402,7 @@ internal sealed class MainForm : Form
                 _activePanel.SelectAllItems();
                 return true;
             case Keys.Control | Keys.D:
-                _activePanel.ClearSelection();
+                _activePanel.ShowFavoritesMenu();
                 return true;
             case Keys.Back:
                 if (ActiveControl is not TextBox)
@@ -436,9 +449,16 @@ internal sealed class MainForm : Form
         UpdateStatus();
     }
 
+    private void ToggleActivePanel()
+    {
+        SetActivePanel(PassivePanel);
+        _activePanel.FocusList();
+    }
+
     private void UpdateStatus()
     {
-        _statusLabel.Text = $"Активная: {_activePanel.CurrentPath}   Целевая: {PassivePanel.CurrentPath}";
+        _commandPathLabel.Text = FormatCommandPath(_activePanel.CurrentPath);
+        _toolTip.SetToolTip(_commandPathLabel, _commandPathLabel.Text);
     }
 
     private void RefreshPanels()
@@ -563,6 +583,139 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void ShowFavoriteDirectoriesMenu(FilePanel panel, Point screenLocation)
+    {
+        SetActivePanel(panel);
+
+        var menu = new ContextMenuStrip();
+        menu.Closed += (_, _) => menu.Dispose();
+
+        var favorites = _settings.FavoriteDirectories.ToList();
+        var existingFavorites = favorites.Where(Directory.Exists).ToList();
+        if (existingFavorites.Count == 0)
+        {
+            menu.Items.Add(new ToolStripMenuItem("(нет избранных каталогов)") { Enabled = false });
+        }
+        else
+        {
+            foreach (var path in existingFavorites)
+            {
+                var item = new ToolStripMenuItem(FavoriteDirectoryName(path))
+                {
+                    ToolTipText = path,
+                    Image = ShellIconProvider.GetSmallIcon(path, true, false)
+                };
+                item.Click += (_, _) =>
+                {
+                    SetActivePanel(panel);
+                    panel.LoadPath(path);
+                    SaveCurrentSettings();
+                };
+                menu.Items.Add(item);
+            }
+        }
+
+        menu.Items.Add(new ToolStripSeparator());
+
+        var currentPath = panel.CurrentPath;
+        var currentIsFavorite = favorites.Any(path => IsSamePath(path, currentPath));
+        var addCurrent = new ToolStripMenuItem("+ Добавить текущий каталог")
+        {
+            Enabled = Directory.Exists(currentPath) && !currentIsFavorite
+        };
+        addCurrent.Click += (_, _) => AddFavoriteDirectory(currentPath);
+        menu.Items.Add(addCurrent);
+
+        var removeCurrent = new ToolStripMenuItem("- Удалить текущий каталог")
+        {
+            Enabled = currentIsFavorite
+        };
+        removeCurrent.Click += (_, _) => RemoveFavoriteDirectory(currentPath);
+        menu.Items.Add(removeCurrent);
+
+        if (favorites.Count > 0)
+        {
+            var removeMenu = new ToolStripMenuItem("Удалить из избранного");
+            foreach (var path in favorites)
+            {
+                var item = new ToolStripMenuItem(FavoriteDirectoryName(path))
+                {
+                    ToolTipText = path,
+                    Image = Directory.Exists(path) ? ShellIconProvider.GetSmallIcon(path, true, false) : null
+                };
+                item.Click += (_, _) => RemoveFavoriteDirectory(path);
+                removeMenu.DropDownItems.Add(item);
+            }
+
+            menu.Items.Add(removeMenu);
+        }
+
+        menu.Show(screenLocation);
+    }
+
+    private void AddFavoriteDirectory(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        {
+            MessageBox.Show(this, "Текущий каталог не найден.", "Избранные каталоги", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var fullPath = Path.GetFullPath(path);
+        if (_settings.FavoriteDirectories.Any(item => IsSamePath(item, fullPath)))
+        {
+            return;
+        }
+
+        _settings.FavoriteDirectories.Add(fullPath);
+        SaveCurrentSettings();
+    }
+
+    private void RemoveFavoriteDirectory(string path)
+    {
+        _settings.FavoriteDirectories.RemoveAll(item => IsSamePath(item, path));
+        SaveCurrentSettings();
+    }
+
+    private static string FavoriteDirectoryName(string path)
+    {
+        var trimmed = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var name = Path.GetFileName(trimmed);
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            return name;
+        }
+
+        return path;
+    }
+
+    private void ShowSelectionMaskDialog(bool mark)
+    {
+        using var dialog = new SelectionMaskForm(mark);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            var changed = _activePanel.MarkByPattern(dialog.SelectedPattern, mark);
+            if (changed == 0)
+            {
+                MessageBox.Show(
+                    this,
+                    mark ? "По этой маске новых элементов не выделено." : "По этой маске ничего не снято.",
+                    dialog.Text,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, dialog.Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     private void ViewText()
     {
         var entry = _activePanel.MarkedOrFocusedEntries.FirstOrDefault() ?? _activePanel.FocusedEntry;
@@ -669,11 +822,10 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var sameDestinationSkipped = entries.RemoveAll(entry =>
-            IsSamePath(entry.FullPath, Path.Combine(args.TargetDirectory, entry.Name))) > 0;
+        entries.RemoveAll(entry => IsSamePath(entry.FullPath, Path.Combine(args.TargetDirectory, entry.Name)));
         if (entries.Count == 0)
         {
-            _statusLabel.Text = "Drag && Drop: цель совпадает с исходной папкой.";
+            UpdateStatus();
             return;
         }
 
@@ -697,10 +849,7 @@ internal sealed class MainForm : Form
                 ? FileOperations.MoveAsync(entries, args.TargetDirectory, token.Progress, token.CancellationToken)
                 : FileOperations.CopyAsync(entries, args.TargetDirectory, token.Progress, token.CancellationToken));
         RefreshPanels();
-
-        _statusLabel.Text = sameDestinationSkipped
-            ? $"{title}: готово, совпадающие с целью элементы пропущены."
-            : $"{title}: готово.";
+        UpdateStatus();
     }
 
     private void CreateFolder()
@@ -1050,7 +1199,7 @@ internal sealed class MainForm : Form
         data.SetData(DataFormats.FileDrop, paths);
         data.SetData("Preferred DropEffect", new MemoryStream(BitConverter.GetBytes(cut ? 2 : 1)));
         Clipboard.SetDataObject(data, true);
-        _statusLabel.Text = cut ? $"Вырезано в буфер: {paths.Length}" : $"Скопировано в буфер: {paths.Length}";
+        UpdateStatus();
     }
 
     private async Task PasteFromClipboardAsync()
@@ -1330,6 +1479,26 @@ internal sealed class MainForm : Form
             : path + Path.DirectorySeparatorChar;
     }
 
+    private static string FormatCommandPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return ">";
+        }
+
+        var root = Path.GetPathRoot(path);
+        if (!string.IsNullOrWhiteSpace(root) &&
+            string.Equals(
+                path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return root + ">";
+        }
+
+        return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + ">";
+    }
+
     private static string CreateUniqueZipPath(IReadOnlyList<FileSystemEntry> entries, string targetDirectory)
     {
         var baseName = entries.Count == 1
@@ -1406,7 +1575,7 @@ internal sealed class MainForm : Form
     {
         MessageBox.Show(
             this,
-            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+F поиск\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: Ctrl копировать, Shift перемещать\nFTP: клиент и встроенный сервер без TLS",
+            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nTab переключить панель\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nNum+ добавить выделение по маске\nNum- убрать выделение по маске\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+D избранные каталоги\nCtrl+F поиск\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: Ctrl копировать, Shift перемещать\nFTP: клиент и встроенный сервер без TLS",
             "О программе",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);

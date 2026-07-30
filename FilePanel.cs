@@ -1,11 +1,14 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 
 namespace AzertyCommander;
 
 internal sealed class FilePanel : UserControl
 {
     private readonly ComboBox _driveBox = new();
+    private readonly Button _favoritesButton = new();
+    private readonly Button _favoritesDropButton = new();
     private readonly TextBox _pathBox = new();
     private readonly Label _spaceLabel = new();
     private readonly DataGridView _grid = new();
@@ -43,6 +46,7 @@ internal sealed class FilePanel : UserControl
     public event EventHandler<FilePanelEntryEventArgs>? RenameRequested;
     public event EventHandler<FilePanelDropEventArgs>? FilesDropped;
     public event EventHandler<FilePanelShellContextMenuEventArgs>? ShellContextMenuRequested;
+    public event EventHandler<FilePanelFavoritesMenuEventArgs>? FavoritesMenuRequested;
 
     public string CurrentPath { get; private set; } = string.Empty;
 
@@ -274,6 +278,31 @@ internal sealed class FilePanel : UserControl
         UpdateStatus(null);
     }
 
+    public int MarkByPattern(string pattern, bool mark)
+    {
+        var matcher = CreateSelectionMatcher(pattern);
+        var changed = 0;
+        foreach (var entry in _entries.Where(entry => !entry.IsParent && matcher(entry.Name)))
+        {
+            if (mark)
+            {
+                if (_markedPaths.Add(entry.FullPath))
+                {
+                    changed++;
+                }
+            }
+            else if (_markedPaths.Remove(entry.FullPath))
+            {
+                changed++;
+            }
+        }
+
+        FocusList();
+        _grid.Invalidate();
+        UpdateStatus(null);
+        return changed;
+    }
+
     public bool SelectPath(string path)
     {
         var fileName = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
@@ -320,6 +349,13 @@ internal sealed class FilePanel : UserControl
         {
             MessageBox.Show(this, ex.Message, "Открытие файла", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    public void ShowFavoritesMenu()
+    {
+        ActivatePanel();
+        var screenLocation = _favoritesButton.PointToScreen(new Point(0, _favoritesButton.Height));
+        FavoritesMenuRequested?.Invoke(this, new FilePanelFavoritesMenuEventArgs(screenLocation));
     }
 
     public void EnterFocusedDirectory()
@@ -433,6 +469,33 @@ internal sealed class FilePanel : UserControl
         _spaceLabel.AutoEllipsis = true;
         driveRow.Controls.Add(_spaceLabel, 1, 0);
 
+        var pathRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            Margin = Padding.Empty
+        };
+        pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
+        pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 22));
+        pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        _favoritesButton.Text = "*";
+        _favoritesButton.Dock = DockStyle.Fill;
+        _favoritesButton.Margin = new Padding(0, 2, 1, 4);
+        _favoritesButton.FlatStyle = FlatStyle.System;
+        _favoritesButton.Click += (_, _) => ShowFavoritesMenu();
+        _favoritesButton.Enter += (_, _) => ActivatePanel();
+        pathRow.Controls.Add(_favoritesButton, 0, 0);
+
+        _favoritesDropButton.Text = "v";
+        _favoritesDropButton.Dock = DockStyle.Fill;
+        _favoritesDropButton.Margin = new Padding(0, 2, 3, 4);
+        _favoritesDropButton.FlatStyle = FlatStyle.System;
+        _favoritesDropButton.Click += (_, _) => ShowFavoritesMenu();
+        _favoritesDropButton.Enter += (_, _) => ActivatePanel();
+        pathRow.Controls.Add(_favoritesDropButton, 1, 0);
+
         _pathBox.Dock = DockStyle.Fill;
         _pathBox.Margin = new Padding(0, 2, 0, 4);
         _pathBox.BorderStyle = BorderStyle.FixedSingle;
@@ -445,6 +508,7 @@ internal sealed class FilePanel : UserControl
             }
         };
         _pathBox.Enter += (_, _) => ActivatePanel();
+        pathRow.Controls.Add(_pathBox, 2, 0);
 
         _grid.Dock = DockStyle.Fill;
         _grid.AllowDrop = true;
@@ -583,7 +647,10 @@ internal sealed class FilePanel : UserControl
         MouseUp += (_, args) => HandleMouseNavigation(args);
         layout.MouseUp += (_, args) => HandleMouseNavigation(args);
         driveRow.MouseUp += (_, args) => HandleMouseNavigation(args);
+        pathRow.MouseUp += (_, args) => HandleMouseNavigation(args);
         _driveBox.MouseUp += (_, args) => HandleMouseNavigation(args);
+        _favoritesButton.MouseUp += (_, args) => HandleMouseNavigation(args);
+        _favoritesDropButton.MouseUp += (_, args) => HandleMouseNavigation(args);
         _spaceLabel.MouseUp += (_, args) => HandleMouseNavigation(args);
         _pathBox.MouseUp += (_, args) => HandleMouseNavigation(args);
         _statusLabel.MouseUp += (_, args) => HandleMouseNavigation(args);
@@ -629,7 +696,10 @@ internal sealed class FilePanel : UserControl
         RegisterDropTarget(this, false);
         RegisterDropTarget(layout, false);
         RegisterDropTarget(driveRow, false);
+        RegisterDropTarget(pathRow, false);
         RegisterDropTarget(_driveBox, false);
+        RegisterDropTarget(_favoritesButton, false);
+        RegisterDropTarget(_favoritesDropButton, false);
         RegisterDropTarget(_spaceLabel, false);
         RegisterDropTarget(_pathBox, false);
         RegisterDropTarget(_grid, true);
@@ -655,7 +725,7 @@ internal sealed class FilePanel : UserControl
         _statusLabel.AutoEllipsis = true;
 
         layout.Controls.Add(driveRow, 0, 0);
-        layout.Controls.Add(_pathBox, 0, 1);
+        layout.Controls.Add(pathRow, 0, 1);
         layout.Controls.Add(_grid, 0, 2);
         layout.Controls.Add(_statusLabel, 0, 3);
         Controls.Add(layout);
@@ -1041,6 +1111,47 @@ internal sealed class FilePanel : UserControl
         {
             return new Font("Segoe UI", 9.75F, FontStyle.Regular, GraphicsUnit.Point);
         }
+    }
+
+    private static Func<string, bool> CreateSelectionMatcher(string pattern)
+    {
+        pattern = pattern.Trim();
+        if (pattern.Length == 0)
+        {
+            throw new ArgumentException("Укажите маску выделения.");
+        }
+
+        if (pattern.StartsWith('<'))
+        {
+            var expression = pattern[1..].Trim();
+            if (expression.Length == 0)
+            {
+                throw new ArgumentException("После символа < нужно указать регулярное выражение.");
+            }
+
+            var regex = new Regex(expression, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            return name => regex.IsMatch(name);
+        }
+
+        var parts = pattern.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+        {
+            parts = ["*.*"];
+        }
+
+        var expressions = parts.Select(part =>
+        {
+            if (part is "*" or "*.*")
+            {
+                return ".*";
+            }
+
+            return Regex.Escape(part)
+                .Replace("\\*", ".*", StringComparison.Ordinal)
+                .Replace("\\?", ".", StringComparison.Ordinal);
+        });
+        var regexMatcher = new Regex("^(?:" + string.Join("|", expressions) + ")$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        return name => regexMatcher.IsMatch(name);
     }
 
     private sealed class DriveItem

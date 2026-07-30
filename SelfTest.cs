@@ -190,6 +190,29 @@ internal static class SelfTest
                 return false;
             }
 
+            if (DescendantControls(form).OfType<StatusStrip>().Any())
+            {
+                Console.Error.WriteLine("Main status strip removal check failed.");
+                return false;
+            }
+
+            if (!DescendantControls(form).OfType<Label>().Any(label => label.Text.EndsWith('>')))
+            {
+                Console.Error.WriteLine("Command path label check failed.");
+                return false;
+            }
+
+            var toolbarTips = DescendantControls(form)
+                .OfType<ToolStrip>()
+                .SelectMany(toolStrip => toolStrip.Items.OfType<ToolStripButton>())
+                .Select(button => button.ToolTipText)
+                .ToHashSet(StringComparer.Ordinal);
+            if (!toolbarTips.Contains("Добавить выделение (Num+)") || !toolbarTips.Contains("Убрать выделение (Num-)"))
+            {
+                Console.Error.WriteLine("Selection toolbar buttons check failed.");
+                return false;
+            }
+
             if (!ExecutableIconLooksBlue())
             {
                 Console.Error.WriteLine("Executable icon color check failed.");
@@ -256,6 +279,13 @@ internal static class SelfTest
                 return false;
             }
 
+            using var selectionMaskForm = new SelectionMaskForm(true);
+            if (selectionMaskForm.Text != "Добавить выделение" || selectionMaskForm.SelectedPattern != "*.*")
+            {
+                Console.Error.WriteLine("Selection mask form check failed.");
+                return false;
+            }
+
             using var driveSelection = new DriveSelectionForm(new[] { Path.GetPathRoot(left) ?? left });
             if (driveSelection.Text != "Выбор дисков")
             {
@@ -271,11 +301,44 @@ internal static class SelfTest
                 Size = new Size(800, 600)
             };
             using var panel = new FilePanel { Dock = DockStyle.Fill };
+            var favoritesMenuRaised = false;
+            panel.FavoritesMenuRequested += (_, args) =>
+            {
+                favoritesMenuRaised = args.ScreenLocation != Point.Empty;
+            };
             host.Controls.Add(panel);
             host.Show();
             Application.DoEvents();
             panel.LoadPath(left);
             panel.FocusList();
+            var favoritesButton = DescendantControls(panel).OfType<Button>().FirstOrDefault(button => button.Text == "*");
+            if (favoritesButton is null)
+            {
+                Console.Error.WriteLine("Favorite directories button check failed.");
+                return false;
+            }
+
+            favoritesButton.PerformClick();
+            if (!favoritesMenuRaised)
+            {
+                Console.Error.WriteLine("Favorite directories menu event check failed.");
+                return false;
+            }
+
+            var markCount = panel.MarkByPattern("*.txt", true);
+            if (markCount == 0 || panel.SelectedEntries.Count == 0)
+            {
+                Console.Error.WriteLine("Selection by mask check failed.");
+                return false;
+            }
+
+            var unmarkCount = panel.MarkByPattern("<one.*", false);
+            if (unmarkCount == 0 || panel.SelectedEntries.Count != 0)
+            {
+                Console.Error.WriteLine("Unselect by regex check failed.");
+                return false;
+            }
+
             panel.ToggleFocusedSelectionAndMoveNext();
             panel.ToggleFocusedSelectionAndMoveNext();
             if (panel.SelectedEntries.Count == 0)

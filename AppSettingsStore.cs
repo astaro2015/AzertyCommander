@@ -40,5 +40,24 @@ internal static class AppSettingsStore
         }
 
         settings.Theme.RowHeight = Math.Clamp(settings.Theme.RowHeight, 24, 96);
+        settings.FavoriteDirectories ??= new List<string>();
+        settings.FavoriteDirectories = settings.FavoriteDirectories
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(NormalizePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string NormalizePath(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch
+        {
+            return path.Trim();
+        }
     }
 }
