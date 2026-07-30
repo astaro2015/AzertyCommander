@@ -900,6 +900,7 @@ internal sealed class FilePanel : UserControl
         _grid.RowTemplate.Height = AppThemeSettings.DefaultRowHeight;
         _grid.ScrollBars = ScrollBars.Both;
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        _grid.ShowCellToolTips = false;
         _grid.StandardTab = true;
         _grid.Columns.Add(new DataGridViewImageColumn
         {

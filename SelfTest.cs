@@ -447,6 +447,7 @@ internal static class SelfTest
             var nameColumn = panelGrid.Columns[nameof(FileSystemEntry.DisplayName)];
             if (!panelGrid.AllowUserToResizeColumns ||
                 panelGrid.AutoSizeColumnsMode != DataGridViewAutoSizeColumnsMode.None ||
+                panelGrid.ShowCellToolTips ||
                 nameColumn.AutoSizeMode != DataGridViewAutoSizeColumnMode.NotSet ||
                 nameColumn.Resizable != DataGridViewTriState.True)
             {
