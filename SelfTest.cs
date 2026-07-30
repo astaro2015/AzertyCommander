@@ -190,6 +190,12 @@ internal static class SelfTest
                 return false;
             }
 
+            if (!ExecutableIconLooksBlue())
+            {
+                Console.Error.WriteLine("Executable icon color check failed.");
+                return false;
+            }
+
             using var settingsForm = new SettingsForm(new AppThemeSettings());
             if (settingsForm.Text != "Настройки")
             {
@@ -346,6 +352,46 @@ internal static class SelfTest
             {
                 yield return descendant;
             }
+        }
+    }
+
+    private static bool ExecutableIconLooksBlue()
+    {
+        try
+        {
+            using var icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            if (icon is null)
+            {
+                return false;
+            }
+
+            using var bitmap = icon.ToBitmap();
+            long red = 0;
+            long green = 0;
+            long blue = 0;
+            long count = 0;
+            for (var y = 0; y < bitmap.Height; y++)
+            {
+                for (var x = 0; x < bitmap.Width; x++)
+                {
+                    var pixel = bitmap.GetPixel(x, y);
+                    if (pixel.A < 16)
+                    {
+                        continue;
+                    }
+
+                    red += pixel.R;
+                    green += pixel.G;
+                    blue += pixel.B;
+                    count++;
+                }
+            }
+
+            return count > 0 && blue > green && green > red;
+        }
+        catch
+        {
+            return false;
         }
     }
 }
