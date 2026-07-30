@@ -4,7 +4,7 @@ namespace AzertyCommander;
 
 internal sealed class FileSystemEntry
 {
-    public FileSystemEntry(string name, string fullPath, bool isDirectory, bool isParent, long? size, DateTime modified, FileAttributes attributes)
+    public FileSystemEntry(string name, string fullPath, bool isDirectory, bool isParent, long? size, DateTime modified, FileAttributes attributes, bool isRemote = false)
     {
         Name = name;
         FullPath = fullPath;
@@ -13,12 +13,14 @@ internal sealed class FileSystemEntry
         Size = size;
         Modified = modified;
         Attributes = attributes;
+        IsRemote = isRemote;
     }
 
     public string Name { get; }
     public string FullPath { get; }
     public bool IsDirectory { get; }
     public bool IsParent { get; }
+    public bool IsRemote { get; }
     public long? Size { get; private set; }
     public DateTime Modified { get; }
     public FileAttributes Attributes { get; }

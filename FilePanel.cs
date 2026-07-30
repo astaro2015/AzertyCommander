@@ -34,7 +34,10 @@ internal sealed class FilePanel : UserControl
     private bool _isActivePanel;
     private bool _loadingDrives;
     private bool _fillingColumnWidths;
+    private bool _isFtpMode;
     private int _lastColumnFillWidth;
+    private string _ftpConnectionName = string.Empty;
+    private string _lastLocalPath = string.Empty;
     private string _sortColumn = nameof(FileSystemEntry.DisplayName);
     private bool _sortAscending = true;
     private const string IconColumnName = "IconColumn";
@@ -51,8 +54,21 @@ internal sealed class FilePanel : UserControl
     public event EventHandler<FilePanelDropEventArgs>? FilesDropped;
     public event EventHandler<FilePanelShellContextMenuEventArgs>? ShellContextMenuRequested;
     public event EventHandler<FilePanelFavoritesMenuEventArgs>? FavoritesMenuRequested;
+    public event EventHandler<FilePanelEntryEventArgs>? FtpEntryOpenRequested;
+    public event EventHandler<FilePanelPathEventArgs>? FtpPathRequested;
+    public event EventHandler? FtpDisconnectRequested;
 
     public string CurrentPath { get; private set; } = string.Empty;
+
+    public bool IsFtpMode => _isFtpMode;
+
+    public string SettingsPath => _isFtpMode ? _lastLocalPath : CurrentPath;
+
+    public string CommandPathText => _isFtpMode
+        ? $"ftp:{_ftpConnectionName}:{CurrentPath}"
+        : CurrentPath;
+
+    public IReadOnlyList<FileSystemEntry> Entries => _entries.Where(entry => !entry.IsParent).ToList();
 
     public IReadOnlyList<FileSystemEntry> SelectedEntries
     {
@@ -112,6 +128,12 @@ internal sealed class FilePanel : UserControl
             return;
         }
 
+        if (_isFtpMode)
+        {
+            FtpDisconnectRequested?.Invoke(this, EventArgs.Empty);
+            ExitFtpMode();
+        }
+
         if (File.Exists(path))
         {
             path = Path.GetDirectoryName(path) ?? path;
@@ -140,7 +162,94 @@ internal sealed class FilePanel : UserControl
         }
 
         CurrentPath = fullPath;
+        _lastLocalPath = fullPath;
         RefreshList();
+    }
+
+    public void LoadFtpEntries(string connectionName, string remotePath, IReadOnlyList<FtpRemoteEntry> remoteEntries)
+    {
+        var normalizedPath = FtpClientSession.NormalizeRemotePath(remotePath);
+        if (!_isFtpMode || !string.Equals(CurrentPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+        {
+            _markedPaths.Clear();
+        }
+
+        if (!_isFtpMode)
+        {
+            _lastLocalPath = CurrentPath;
+        }
+
+        _isFtpMode = true;
+        _ftpConnectionName = string.IsNullOrWhiteSpace(connectionName) ? "FTP" : connectionName.Trim();
+        CurrentPath = normalizedPath;
+
+        var loaded = new List<FileSystemEntry>();
+        if (normalizedPath != "/")
+        {
+            loaded.Add(CreateFtpFileSystemEntry(new FtpRemoteEntry
+            {
+                Name = "..",
+                FullPath = FtpClientSession.ParentRemotePath(normalizedPath),
+                IsDirectory = true,
+                IsParent = true
+            }));
+        }
+
+        loaded.AddRange(remoteEntries.Where(entry => !entry.IsParent).Select(CreateFtpFileSystemEntry));
+        loaded = SortEntries(loaded);
+
+        _entries.RaiseListChangedEvents = false;
+        _entries.Clear();
+        foreach (var entry in loaded)
+        {
+            _entries.Add(entry);
+        }
+
+        _entries.RaiseListChangedEvents = true;
+        _entries.ResetBindings();
+        _markedPaths.IntersectWith(loaded.Where(entry => !entry.IsParent).Select(entry => entry.FullPath));
+        _grid.Invalidate();
+        _pathBox.Text = normalizedPath;
+        _loadingDrives = true;
+        _driveBox.SelectedIndex = -1;
+        _loadingDrives = false;
+        _spaceLabel.Text = "FTP: " + _ftpConnectionName;
+        UpdateStatus(null);
+        ScheduleFillColumnsToGridWidth(force: true);
+        PathChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void ExitFtpMode()
+    {
+        if (!_isFtpMode)
+        {
+            return;
+        }
+
+        _isFtpMode = false;
+        _ftpConnectionName = string.Empty;
+        _markedPaths.Clear();
+        _entries.Clear();
+        CurrentPath = _lastLocalPath;
+        _pathBox.Text = CurrentPath;
+        UpdateDriveSelection();
+        UpdateSpaceLabel();
+        UpdateStatus(null);
+        PathChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static FileSystemEntry CreateFtpFileSystemEntry(FtpRemoteEntry entry)
+    {
+        var attributes = entry.IsDirectory ? FileAttributes.Directory : FileAttributes.Archive;
+        return new FileSystemEntry(
+            entry.Name,
+            entry.FullPath,
+            entry.IsDirectory,
+            entry.IsParent,
+            entry.IsDirectory ? null : entry.Size,
+            entry.Modified ?? DateTime.MinValue,
+            attributes,
+            isRemote: true);
     }
 
     public void ApplyTheme(AppThemeSettings theme)
@@ -205,6 +314,11 @@ internal sealed class FilePanel : UserControl
 
     public void RefreshList()
     {
+        if (_isFtpMode)
+        {
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(CurrentPath) || !Directory.Exists(CurrentPath))
         {
             return;
@@ -344,6 +458,12 @@ internal sealed class FilePanel : UserControl
             return;
         }
 
+        if (_isFtpMode)
+        {
+            FtpEntryOpenRequested?.Invoke(this, new FilePanelEntryEventArgs(entry));
+            return;
+        }
+
         if (entry.IsDirectory)
         {
             LoadPath(entry.FullPath);
@@ -369,6 +489,16 @@ internal sealed class FilePanel : UserControl
 
     public void EnterFocusedDirectory()
     {
+        if (_isFtpMode)
+        {
+            if (FocusedEntry is { IsDirectory: true } ftpEntry)
+            {
+                FtpEntryOpenRequested?.Invoke(this, new FilePanelEntryEventArgs(ftpEntry));
+            }
+
+            return;
+        }
+
         if (FocusedEntry is { IsDirectory: true } entry)
         {
             LoadPath(entry.FullPath);
@@ -377,6 +507,12 @@ internal sealed class FilePanel : UserControl
 
     public void NavigateUp()
     {
+        if (_isFtpMode)
+        {
+            FtpPathRequested?.Invoke(this, new FilePanelPathEventArgs(FtpClientSession.ParentRemotePath(CurrentPath)));
+            return;
+        }
+
         var parent = Directory.GetParent(CurrentPath);
         if (parent is not null)
         {
@@ -718,7 +854,14 @@ internal sealed class FilePanel : UserControl
             if (args.KeyCode == Keys.Enter)
             {
                 args.SuppressKeyPress = true;
-                LoadPath(_pathBox.Text);
+                if (_isFtpMode)
+                {
+                    FtpPathRequested?.Invoke(this, new FilePanelPathEventArgs(_pathBox.Text));
+                }
+                else
+                {
+                    LoadPath(_pathBox.Text);
+                }
             }
         };
         _pathBox.Enter += (_, _) => ActivatePanel();
@@ -1116,6 +1259,11 @@ internal sealed class FilePanel : UserControl
     private void HandleShellContextMenuClick(DataGridViewCellMouseEventArgs args)
     {
         ResetSlowRenameClick();
+        if (_isFtpMode)
+        {
+            return;
+        }
+
         if (args.RowIndex < 0 ||
             _grid.Rows[args.RowIndex].DataBoundItem is not FileSystemEntry { IsParent: false } entry)
         {
@@ -1189,6 +1337,11 @@ internal sealed class FilePanel : UserControl
 
     private void UpdateDriveSelection()
     {
+        if (_isFtpMode)
+        {
+            return;
+        }
+
         var root = Path.GetPathRoot(CurrentPath);
         if (string.IsNullOrEmpty(root))
         {
@@ -1210,6 +1363,12 @@ internal sealed class FilePanel : UserControl
 
     private void UpdateSpaceLabel()
     {
+        if (_isFtpMode)
+        {
+            _spaceLabel.Text = "FTP: " + _ftpConnectionName;
+            return;
+        }
+
         try
         {
             var root = Path.GetPathRoot(CurrentPath);

@@ -449,6 +449,43 @@ internal static class SelfTest
                 return false;
             }
 
+            var ftpPathRequested = string.Empty;
+            panel.FtpPathRequested += (_, args) => ftpPathRequested = args.Path;
+            panel.LoadFtpEntries("test", "/pub", new[]
+            {
+                new FtpRemoteEntry
+                {
+                    Name = "remote.txt",
+                    FullPath = "/pub/remote.txt",
+                    IsDirectory = false,
+                    Size = 4,
+                    Modified = DateTime.Now
+                }
+            });
+            if (!panel.IsFtpMode ||
+                panel.CurrentPath != "/pub" ||
+                panel.CommandPathText != "ftp:test:/pub" ||
+                panel.SettingsPath != left ||
+                panel.Entries.Count != 1)
+            {
+                Console.Error.WriteLine("FTP panel mode check failed.");
+                return false;
+            }
+
+            panel.NavigateUp();
+            if (ftpPathRequested != "/")
+            {
+                Console.Error.WriteLine("FTP panel navigation event check failed.");
+                return false;
+            }
+
+            panel.LoadPath(left);
+            if (panel.IsFtpMode || panel.CurrentPath != left)
+            {
+                Console.Error.WriteLine("FTP panel local restore check failed.");
+                return false;
+            }
+
             Console.WriteLine("OK");
             return true;
         }

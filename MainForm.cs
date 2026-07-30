@@ -12,6 +12,8 @@ internal sealed class MainForm : Form
     private readonly TextBox _commandBox = new();
     private readonly SplitContainer _splitContainer = new();
     private readonly ToolStrip _quickLaunchToolbar = new();
+    private readonly Dictionary<FilePanel, FtpClientSession> _ftpSessions = new();
+    private readonly Dictionary<FilePanel, FtpConnectionProfile> _ftpProfiles = new();
     private readonly List<QuickLaunchEntry> _quickLaunchEntries = QuickLaunchStore.Load();
     private ContextMenuStrip? _favoriteDirectoriesMenu;
     private FilePanel _activePanel;
@@ -135,6 +137,7 @@ internal sealed class MainForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         SaveCurrentSettings();
+        DisposeFtpSessions();
         base.OnFormClosing(e);
     }
 
@@ -303,6 +306,12 @@ internal sealed class MainForm : Form
         _rightPanel.ShellContextMenuRequested += (_, args) => ShowShellContextMenu(args);
         _leftPanel.FavoritesMenuRequested += (_, args) => ShowFavoriteDirectoriesMenu(_leftPanel, args.ScreenLocation);
         _rightPanel.FavoritesMenuRequested += (_, args) => ShowFavoriteDirectoriesMenu(_rightPanel, args.ScreenLocation);
+        _leftPanel.FtpEntryOpenRequested += async (_, args) => await OpenFtpEntryAsync(_leftPanel, args.Entry);
+        _rightPanel.FtpEntryOpenRequested += async (_, args) => await OpenFtpEntryAsync(_rightPanel, args.Entry);
+        _leftPanel.FtpPathRequested += async (_, args) => await ChangeFtpDirectoryAsync(_leftPanel, args.Path);
+        _rightPanel.FtpPathRequested += async (_, args) => await ChangeFtpDirectoryAsync(_rightPanel, args.Path);
+        _leftPanel.FtpDisconnectRequested += (_, _) => DisconnectFtpPanel(_leftPanel);
+        _rightPanel.FtpDisconnectRequested += (_, _) => DisconnectFtpPanel(_rightPanel);
     }
 
     private void LoadInitialPaths()
@@ -468,14 +477,25 @@ internal sealed class MainForm : Form
 
     private void UpdateStatus()
     {
-        _commandPathLabel.Text = FormatCommandPath(_activePanel.CurrentPath);
+        _commandPathLabel.Text = FormatCommandPath(_activePanel.CommandPathText);
         _toolTip.SetToolTip(_commandPathLabel, _commandPathLabel.Text);
     }
 
     private void RefreshPanels()
     {
-        _leftPanel.RefreshList();
-        _rightPanel.RefreshList();
+        RefreshPanel(_leftPanel);
+        RefreshPanel(_rightPanel);
+    }
+
+    private void RefreshPanel(FilePanel panel)
+    {
+        if (panel.IsFtpMode)
+        {
+            _ = RefreshFtpPanelAsync(panel);
+            return;
+        }
+
+        panel.RefreshList();
     }
 
     private void CenterSplitter()
@@ -568,8 +588,8 @@ internal sealed class MainForm : Form
             ? Math.Clamp((double)_splitContainer.SplitterDistance / availableWidth, 0.05D, 0.95D)
             : 0.5D;
 
-        _settings.LeftPanel.Path = _leftPanel.CurrentPath;
-        _settings.RightPanel.Path = _rightPanel.CurrentPath;
+        _settings.LeftPanel.Path = _leftPanel.SettingsPath;
+        _settings.RightPanel.Path = _rightPanel.SettingsPath;
         _settings.LeftPanel.ColumnWidths = _leftPanel.GetColumnWidths();
         _settings.RightPanel.ColumnWidths = _rightPanel.GetColumnWidths();
 
@@ -776,6 +796,12 @@ internal sealed class MainForm : Form
 
     private void ViewText()
     {
+        if (_activePanel.IsFtpMode)
+        {
+            MessageBox.Show(this, "FTP-файл сначала скачайте в соседнюю панель клавишей F5.", "Просмотр", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         var entry = _activePanel.MarkedOrFocusedEntries.FirstOrDefault() ?? _activePanel.FocusedEntry;
         if (entry is null || entry.IsDirectory)
         {
@@ -789,6 +815,12 @@ internal sealed class MainForm : Form
 
     private async Task CopySelectedAsync()
     {
+        if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode)
+        {
+            await CopyOrMoveWithFtpAsync(move: false);
+            return;
+        }
+
         var entries = GetSelectedEntries("Копирование");
         if (entries is null)
         {
@@ -806,6 +838,12 @@ internal sealed class MainForm : Form
 
     private async Task MoveSelectedAsync()
     {
+        if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode)
+        {
+            await CopyOrMoveWithFtpAsync(move: true);
+            return;
+        }
+
         var entries = GetSelectedEntries("Перемещение");
         if (entries is null)
         {
@@ -821,8 +859,299 @@ internal sealed class MainForm : Form
         RefreshPanels();
     }
 
+    private async Task CopyOrMoveWithFtpAsync(bool move)
+    {
+        if (_activePanel.IsFtpMode && PassivePanel.IsFtpMode)
+        {
+            MessageBox.Show(this, "Прямое копирование FTP -> FTP пока не поддержано.", move ? "FTP перемещение" : "FTP копирование", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (_activePanel.IsFtpMode)
+        {
+            await DownloadFromFtpAsync(move);
+            return;
+        }
+
+        if (PassivePanel.IsFtpMode)
+        {
+            await UploadToFtpAsync(move);
+        }
+    }
+
+    private async Task DownloadFromFtpAsync(bool move)
+    {
+        var title = move ? "FTP перемещение: скачивание" : "FTP скачивание";
+        if (!TryGetFtpSession(_activePanel, out var session, out _))
+        {
+            MessageBox.Show(this, "FTP-панель не подключена.", title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var entries = GetFtpSelectedEntries(_activePanel, title);
+        if (entries is null)
+        {
+            return;
+        }
+
+        var targetDirectory = PassivePanel.SettingsPath;
+        if (!Directory.Exists(targetDirectory))
+        {
+            MessageBox.Show(this, "Соседняя локальная папка не найдена.", title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (!ConfirmLocalConflicts(entries, targetDirectory, title))
+        {
+            return;
+        }
+
+        await RunOperationAsync(title, async context =>
+        {
+            var completed = 0;
+            var total = Math.Max(1, entries.Count);
+            foreach (var entry in entries)
+            {
+                await DownloadFtpEntryAsync(session, entry, targetDirectory, context.Progress, context.CancellationToken, total, () => ++completed, countAsItem: true);
+            }
+
+            if (move)
+            {
+                foreach (var entry in entries)
+                {
+                    await DeleteFtpEntryAsync(session, entry, context.CancellationToken);
+                }
+            }
+        });
+
+        PassivePanel.RefreshList();
+        await RefreshFtpPanelAsync(_activePanel);
+    }
+
+    private async Task UploadToFtpAsync(bool move)
+    {
+        var title = move ? "FTP перемещение: закачка" : "FTP закачка";
+        if (!TryGetFtpSession(PassivePanel, out var session, out _))
+        {
+            MessageBox.Show(this, "Соседняя FTP-панель не подключена.", title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var entries = GetSelectedEntries(title);
+        if (entries is null)
+        {
+            return;
+        }
+
+        if (entries.Any(entry => entry.IsRemote))
+        {
+            MessageBox.Show(this, "Для FTP -> FTP используйте сначала локальную панель.", title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (!ConfirmFtpConflicts(entries, PassivePanel, title))
+        {
+            return;
+        }
+
+        await RunOperationAsync(title, async context =>
+        {
+            var completed = 0;
+            var total = Math.Max(1, entries.Count);
+            foreach (var entry in entries)
+            {
+                await UploadLocalEntryAsync(session, entry.FullPath, PassivePanel.CurrentPath, context.Progress, context.CancellationToken, total, () => ++completed, countAsItem: true);
+            }
+
+            if (move)
+            {
+                foreach (var entry in entries)
+                {
+                    DeleteLocalEntryAfterUpload(entry);
+                }
+            }
+        });
+
+        _activePanel.RefreshList();
+        await RefreshFtpPanelAsync(PassivePanel);
+    }
+
+    private async Task DownloadFtpEntryAsync(
+        FtpClientSession session,
+        FileSystemEntry entry,
+        string localDirectory,
+        IProgress<OperationProgress> progress,
+        CancellationToken token,
+        int total,
+        Func<int> completeItem,
+        bool countAsItem)
+    {
+        token.ThrowIfCancellationRequested();
+        progress.Report(new OperationProgress(0, total, "FTP: " + entry.FullPath));
+        if (entry.IsDirectory)
+        {
+            var targetDirectory = Path.Combine(localDirectory, entry.Name);
+            Directory.CreateDirectory(targetDirectory);
+            foreach (var child in await session.ListAsync(entry.FullPath, token))
+            {
+                await DownloadFtpEntryAsync(session, CreateEntryFromFtp(child), targetDirectory, progress, token, total, completeItem, countAsItem: false);
+            }
+        }
+        else
+        {
+            await session.DownloadFileAsync(entry.FullPath, Path.Combine(localDirectory, entry.Name), null, token);
+        }
+
+        if (countAsItem)
+        {
+            var current = completeItem();
+            progress.Report(new OperationProgress(Math.Min(current, total), total, entry.Name));
+        }
+    }
+
+    private async Task UploadLocalEntryAsync(
+        FtpClientSession session,
+        string localPath,
+        string remoteDirectory,
+        IProgress<OperationProgress> progress,
+        CancellationToken token,
+        int total,
+        Func<int> completeItem,
+        bool countAsItem)
+    {
+        token.ThrowIfCancellationRequested();
+        progress.Report(new OperationProgress(0, total, "FTP: " + localPath));
+        if (Directory.Exists(localPath))
+        {
+            var remotePath = FtpClientSession.CombineRemotePath(remoteDirectory, Path.GetFileName(localPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
+            try
+            {
+                await session.CreateDirectoryAsync(remotePath, token);
+            }
+            catch
+            {
+                // Existing FTP directories are fine for recursive upload.
+            }
+
+            foreach (var file in Directory.EnumerateFiles(localPath))
+            {
+                await UploadLocalEntryAsync(session, file, remotePath, progress, token, total, completeItem, countAsItem: false);
+            }
+
+            foreach (var directory in Directory.EnumerateDirectories(localPath))
+            {
+                await UploadLocalEntryAsync(session, directory, remotePath, progress, token, total, completeItem, countAsItem: false);
+            }
+        }
+        else
+        {
+            var remotePath = FtpClientSession.CombineRemotePath(remoteDirectory, Path.GetFileName(localPath));
+            await session.UploadFileAsync(localPath, remotePath, null, token);
+        }
+
+        if (countAsItem)
+        {
+            var current = completeItem();
+            progress.Report(new OperationProgress(Math.Min(current, total), total, Path.GetFileName(localPath)));
+        }
+    }
+
+    private IReadOnlyList<FileSystemEntry>? GetFtpSelectedEntries(FilePanel panel, string title)
+    {
+        var entries = panel.MarkedOrFocusedEntries
+            .Where(entry => entry.IsRemote && !entry.IsParent)
+            .ToList();
+        if (entries.Count == 0)
+        {
+            MessageBox.Show(this, "Ничего не выделено на FTP-панели.", title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return null;
+        }
+
+        return entries;
+    }
+
+    private bool ConfirmLocalConflicts(IReadOnlyList<FileSystemEntry> entries, string localDirectory, string title)
+    {
+        var hasConflicts = entries.Any(entry =>
+        {
+            var target = Path.Combine(localDirectory, entry.Name);
+            return entry.IsDirectory ? Directory.Exists(target) : File.Exists(target);
+        });
+
+        return !hasConflicts || MessageBox.Show(
+            this,
+            "В соседней локальной панели уже есть элементы с такими именами. Файлы будут заменены, папки объединены. Продолжить?",
+            title,
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+    }
+
+    private bool ConfirmFtpConflicts(IReadOnlyList<FileSystemEntry> entries, FilePanel ftpPanel, string title)
+    {
+        var remoteNames = ftpPanel.Entries
+            .Select(entry => entry.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var hasConflicts = entries.Any(entry => remoteNames.Contains(entry.Name));
+
+        return !hasConflicts || MessageBox.Show(
+            this,
+            "В FTP-панели уже есть элементы с такими именами. Файлы будут заменены, папки объединены. Продолжить?",
+            title,
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes;
+    }
+
+    private async Task DeleteFtpEntryAsync(FtpClientSession session, FileSystemEntry entry, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (entry.IsDirectory)
+        {
+            foreach (var child in await session.ListAsync(entry.FullPath, token))
+            {
+                await DeleteFtpEntryAsync(session, CreateEntryFromFtp(child), token);
+            }
+
+            await session.RemoveDirectoryAsync(entry.FullPath, token);
+        }
+        else
+        {
+            await session.DeleteFileAsync(entry.FullPath, token);
+        }
+    }
+
+    private static FileSystemEntry CreateEntryFromFtp(FtpRemoteEntry entry)
+    {
+        return new FileSystemEntry(
+            entry.Name,
+            entry.FullPath,
+            entry.IsDirectory,
+            entry.IsParent,
+            entry.IsDirectory ? null : entry.Size,
+            entry.Modified ?? DateTime.MinValue,
+            entry.IsDirectory ? FileAttributes.Directory : FileAttributes.Archive,
+            isRemote: true);
+    }
+
+    private static void DeleteLocalEntryAfterUpload(FileSystemEntry entry)
+    {
+        if (entry.IsDirectory)
+        {
+            Directory.Delete(entry.FullPath, recursive: true);
+        }
+        else
+        {
+            File.Delete(entry.FullPath);
+        }
+    }
+
     private async Task CompareSelectedFilesAsync()
     {
+        if (_leftPanel.IsFtpMode || _rightPanel.IsFtpMode)
+        {
+            MessageBox.Show(this, "Побайтовое сравнение работает для локальных файлов. FTP-файл сначала скачайте.", "Сравнение файлов", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         var left = GetSingleCompareFile(_leftPanel, "левой");
         if (left is null)
         {
@@ -912,6 +1241,12 @@ internal sealed class MainForm : Form
 
     private void CreateFolder()
     {
+        if (_activePanel.IsFtpMode)
+        {
+            _ = CreateFtpFolderAsync();
+            return;
+        }
+
         var name = InputDialog.Show(this, "Новая папка", "Имя папки:", "Новая папка");
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -936,6 +1271,12 @@ internal sealed class MainForm : Form
         var entry = _activePanel.MarkedOrFocusedEntries.FirstOrDefault() ?? _activePanel.FocusedEntry;
         if (entry is null || entry.IsParent)
         {
+            return;
+        }
+
+        if (_activePanel.IsFtpMode)
+        {
+            _ = RenameFtpEntryAsync(entry);
             return;
         }
 
@@ -976,8 +1317,61 @@ internal sealed class MainForm : Form
         }
     }
 
+    private async Task CreateFtpFolderAsync()
+    {
+        if (!TryGetFtpSession(_activePanel, out var session, out _))
+        {
+            MessageBox.Show(this, "FTP-панель не подключена.", "FTP новая папка", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var name = InputDialog.Show(this, "FTP новая папка", "Имя папки:", "Новая папка");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        await RunOperationAsync("FTP новая папка", async context =>
+        {
+            await session.CreateDirectoryAsync(FtpClientSession.CombineRemotePath(_activePanel.CurrentPath, name), context.CancellationToken);
+        });
+
+        await RefreshFtpPanelAsync(_activePanel);
+        _activePanel.SelectPath(FtpClientSession.CombineRemotePath(_activePanel.CurrentPath, name));
+    }
+
+    private async Task RenameFtpEntryAsync(FileSystemEntry entry)
+    {
+        if (!TryGetFtpSession(_activePanel, out var session, out _))
+        {
+            MessageBox.Show(this, "FTP-панель не подключена.", "FTP переименование", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var name = InputDialog.Show(this, "FTP переименовать", "Новое имя:", entry.Name);
+        if (string.IsNullOrWhiteSpace(name) || string.Equals(name, entry.Name, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var newPath = FtpClientSession.CombineRemotePath(FtpClientSession.ParentRemotePath(entry.FullPath), name);
+        await RunOperationAsync("FTP переименование", async context =>
+        {
+            await session.RenameAsync(entry.FullPath, newPath, context.CancellationToken);
+        });
+
+        await RefreshFtpPanelAsync(_activePanel);
+        _activePanel.SelectPath(newPath);
+    }
+
     private void DeleteSelected(bool permanent)
     {
+        if (_activePanel.IsFtpMode)
+        {
+            _ = DeleteFtpSelectedAsync();
+            return;
+        }
+
         var entries = GetSelectedEntries(permanent ? "Удаление безвозвратно" : "Удаление");
         if (entries is null)
         {
@@ -1022,8 +1416,49 @@ internal sealed class MainForm : Form
         }
     }
 
+    private async Task DeleteFtpSelectedAsync()
+    {
+        if (!TryGetFtpSession(_activePanel, out var session, out _))
+        {
+            MessageBox.Show(this, "FTP-панель не подключена.", "FTP удаление", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var entries = GetFtpSelectedEntries(_activePanel, "FTP удаление");
+        if (entries is null)
+        {
+            return;
+        }
+
+        if (MessageBox.Show(this, $"Удалить на FTP: {entries.Count} элемент(ов)?", "FTP удаление", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        await RunOperationAsync("FTP удаление", async context =>
+        {
+            var completed = 0;
+            var total = Math.Max(1, entries.Count);
+            foreach (var entry in entries)
+            {
+                context.Progress.Report(new OperationProgress(completed, total, "FTP: " + entry.FullPath));
+                await DeleteFtpEntryAsync(session, entry, context.CancellationToken);
+                completed++;
+                context.Progress.Report(new OperationProgress(completed, total, entry.Name));
+            }
+        });
+
+        await RefreshFtpPanelAsync(_activePanel);
+    }
+
     private async Task CreateZipAsync()
     {
+        if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode)
+        {
+            MessageBox.Show(this, "ZIP-операции пока работают только между локальными панелями.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         var entries = GetSelectedEntries("ZIP");
         if (entries is null)
         {
@@ -1038,6 +1473,12 @@ internal sealed class MainForm : Form
 
     private async Task ExtractZipAsync()
     {
+        if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode)
+        {
+            MessageBox.Show(this, "ZIP-операции пока работают только между локальными панелями.", "Распаковка ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         var zipEntries = _activePanel.MarkedOrFocusedEntries
             .Where(entry => !entry.IsDirectory && string.Equals(Path.GetExtension(entry.FullPath), ".zip", StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -1064,6 +1505,12 @@ internal sealed class MainForm : Form
 
     private void ShowSearch()
     {
+        if (_activePanel.IsFtpMode)
+        {
+            MessageBox.Show(this, "Поиск сейчас работает по локальным папкам. Для FTP используйте навигацию панели.", "Поиск", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         using var search = new SearchForm(_activePanel.CurrentPath);
         search.OpenRequested += path =>
         {
@@ -1080,9 +1527,10 @@ internal sealed class MainForm : Form
         search.ShowDialog(this);
     }
 
-    private void ShowFtpClient()
+    private async void ShowFtpClient()
     {
-        using var connectionManager = new FtpConnectionManagerForm(_settings.FtpConnections, _settings.FtpConnectionGroups, _activePanel.CurrentPath);
+        var targetPanel = _activePanel;
+        using var connectionManager = new FtpConnectionManagerForm(_settings.FtpConnections, _settings.FtpConnectionGroups, targetPanel.SettingsPath);
         var result = connectionManager.ShowDialog(this);
         if (connectionManager.ProfilesChanged)
         {
@@ -1096,13 +1544,135 @@ internal sealed class MainForm : Form
             return;
         }
 
-        using var ftpClient = new FtpClientForm(connectionManager.SelectedProfile, () => _activePanel.CurrentPath, RefreshPanels);
-        ftpClient.ShowDialog(this);
+        await ConnectFtpPanelAsync(targetPanel, connectionManager.SelectedProfile);
+    }
+
+    private async Task ConnectFtpPanelAsync(FilePanel panel, FtpConnectionProfile profile)
+    {
+        await RunOperationAsync("FTP подключение", async context =>
+        {
+            DisconnectFtpPanel(panel);
+            var session = new FtpClientSession();
+            try
+            {
+                await session.ConnectAsync(CreateFtpOptions(profile), context.CancellationToken);
+
+                if (!string.IsNullOrWhiteSpace(profile.RemoteDirectory) && profile.RemoteDirectory.Trim() != "/")
+                {
+                    await session.ChangeDirectoryAsync(profile.RemoteDirectory.Trim(), context.CancellationToken);
+                }
+
+                var list = await session.ListAsync(context.CancellationToken);
+                _ftpSessions[panel] = session;
+                _ftpProfiles[panel] = profile.Clone();
+                panel.LoadFtpEntries(profile.Name, session.CurrentDirectory, list);
+            }
+            catch
+            {
+                session.Dispose();
+                throw;
+            }
+        });
+
+        SetActivePanel(panel);
+        panel.FocusList();
+    }
+
+    private async Task RefreshFtpPanelAsync(FilePanel panel)
+    {
+        if (!TryGetFtpSession(panel, out var session, out var profile))
+        {
+            return;
+        }
+
+        try
+        {
+            var list = await session.ListAsync(CancellationToken.None);
+            panel.LoadFtpEntries(profile.Name, session.CurrentDirectory, list);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "FTP обновление", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private async Task ChangeFtpDirectoryAsync(FilePanel panel, string path)
+    {
+        if (!TryGetFtpSession(panel, out var session, out var profile))
+        {
+            return;
+        }
+
+        await RunOperationAsync("FTP переход", async context =>
+        {
+            await session.ChangeDirectoryAsync(path, context.CancellationToken);
+            var list = await session.ListAsync(context.CancellationToken);
+            panel.LoadFtpEntries(profile.Name, session.CurrentDirectory, list);
+        });
+
+        panel.FocusList();
+        UpdateStatus();
+    }
+
+    private async Task OpenFtpEntryAsync(FilePanel panel, FileSystemEntry entry)
+    {
+        if (entry.IsDirectory)
+        {
+            await ChangeFtpDirectoryAsync(panel, entry.FullPath);
+            return;
+        }
+
+        MessageBox.Show(this, "FTP-файл можно скачать в соседнюю панель клавишей F5.", "FTP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private void DisconnectFtpPanel(FilePanel panel)
+    {
+        if (_ftpSessions.Remove(panel, out var session))
+        {
+            session.Dispose();
+        }
+
+        _ftpProfiles.Remove(panel);
+    }
+
+    private void DisposeFtpSessions()
+    {
+        foreach (var session in _ftpSessions.Values)
+        {
+            session.Dispose();
+        }
+
+        _ftpSessions.Clear();
+        _ftpProfiles.Clear();
+    }
+
+    private bool TryGetFtpSession(FilePanel panel, out FtpClientSession session, out FtpConnectionProfile profile)
+    {
+        if (_ftpSessions.TryGetValue(panel, out session!) &&
+            _ftpProfiles.TryGetValue(panel, out profile!))
+        {
+            return true;
+        }
+
+        session = null!;
+        profile = null!;
+        return false;
+    }
+
+    private static FtpConnectionOptions CreateFtpOptions(FtpConnectionProfile profile)
+    {
+        return new FtpConnectionOptions
+        {
+            Host = profile.Host.Trim(),
+            Port = profile.Port,
+            UserName = profile.Anonymous ? "anonymous" : profile.UserName.Trim(),
+            Password = profile.Anonymous ? "guest@" : profile.Password
+        };
     }
 
     private void ShowFtpServer()
     {
-        using var ftpServer = new FtpServerForm(_activePanel.CurrentPath);
+        using var ftpServer = new FtpServerForm(_activePanel.SettingsPath);
         ftpServer.ShowDialog(this);
     }
 
@@ -1134,7 +1704,7 @@ internal sealed class MainForm : Form
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c " + command)
             {
-                WorkingDirectory = _activePanel.CurrentPath,
+                WorkingDirectory = Directory.Exists(_activePanel.SettingsPath) ? _activePanel.SettingsPath : Environment.CurrentDirectory,
                 UseShellExecute = true
             });
             _commandBox.Clear();
@@ -1246,6 +1816,12 @@ internal sealed class MainForm : Form
 
     private void CopySelectionToClipboard(bool cut)
     {
+        if (_activePanel.IsFtpMode)
+        {
+            MessageBox.Show(this, "Буфер Windows работает с локальными файлами. Для FTP используйте F5/F6.", cut ? "Вырезать" : "Копировать", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         var entries = GetSelectedEntries(cut ? "Вырезать" : "Копировать");
         if (entries is null)
         {
@@ -1262,6 +1838,12 @@ internal sealed class MainForm : Form
 
     private async Task PasteFromClipboardAsync()
     {
+        if (_activePanel.IsFtpMode)
+        {
+            MessageBox.Show(this, "Вставка из буфера в FTP пока не поддержана. Для закачки откройте FTP в соседней панели и нажмите F5 на локальных файлах.", "Вставка", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         if (!Clipboard.ContainsFileDropList())
         {
             MessageBox.Show(this, "В буфере обмена нет файлов.", "Вставка", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1544,6 +2126,14 @@ internal sealed class MainForm : Form
             return ">";
         }
 
+        if (path.StartsWith("ftp:", StringComparison.OrdinalIgnoreCase))
+        {
+            var ftpPath = path.Replace('\\', '/');
+            return ftpPath.EndsWith(":/", StringComparison.Ordinal)
+                ? ftpPath + ">"
+                : ftpPath.TrimEnd('/') + ">";
+        }
+
         var root = Path.GetPathRoot(path);
         if (!string.IsNullOrWhiteSpace(root) &&
             string.Equals(
@@ -1633,7 +2223,7 @@ internal sealed class MainForm : Form
     {
         MessageBox.Show(
             this,
-            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nTab переключить панель\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nNum+ добавить выделение по маске\nNum- убрать выделение по маске\nNum* выделить всё\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+D избранные каталоги\nCtrl+F поиск\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: обычный бросок копирует, Shift перемещает\nFTP: клиент и встроенный сервер без TLS",
+            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nTab переключить панель\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nNum+ добавить выделение по маске\nNum- убрать выделение по маске\nNum* выделить всё\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+D избранные каталоги\nCtrl+F поиск\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: обычный бросок копирует, Shift перемещает\nFTP: подключение в активную панель, F5/F6 обмен с локальной панелью\nFTP сервер: обычный FTP без TLS",
             "О программе",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
