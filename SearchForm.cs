@@ -25,6 +25,7 @@ internal sealed class SearchForm : Form
     private readonly Button _openButton = new();
     private readonly Button _viewButton = new();
     private readonly Button _newSearchButton = new();
+    private readonly Button _feedButton = new();
     private readonly Label _resultsTitleLabel = new();
     private readonly Label _statusLabel = new();
     private readonly ListBox _resultsList = new();
@@ -45,6 +46,20 @@ internal sealed class SearchForm : Form
     }
 
     public event Action<string>? OpenRequested;
+    public event Action<IReadOnlyList<FileSystemEntry>, string>? FeedResultsRequested;
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (_searchCancellation is not null && e.CloseReason == CloseReason.UserClosing)
+        {
+            _searchCancellation.Cancel();
+            _statusLabel.Text = "Прерываю поиск...";
+            e.Cancel = true;
+            return;
+        }
+
+        base.OnFormClosing(e);
+    }
 
     private void BuildUi(string root)
     {
@@ -280,6 +295,11 @@ internal sealed class SearchForm : Form
                 args.SuppressKeyPress = true;
                 ViewSelected();
             }
+            else if (args.KeyCode == Keys.F5)
+            {
+                args.SuppressKeyPress = true;
+                FeedResultsToPanel();
+            }
         };
         panel.Controls.Add(_resultsList, 0, 1);
 
@@ -305,10 +325,14 @@ internal sealed class SearchForm : Form
         _openButton.Text = "Перейти к файлу";
         _openButton.Dock = DockStyle.Fill;
         _openButton.Click += (_, _) => OpenSelected();
+        _feedButton.Text = "Вывести всё в панель";
+        _feedButton.Dock = DockStyle.Fill;
+        _feedButton.Click += (_, _) => FeedResultsToPanel();
 
         bottomButtons.Controls.Add(_viewButton, 1, 0);
         bottomButtons.Controls.Add(_newSearchButton, 2, 0);
         bottomButtons.Controls.Add(_openButton, 3, 0);
+        bottomButtons.Controls.Add(_feedButton, 4, 0);
         panel.Controls.Add(bottomButtons, 0, 2);
 
         return panel;
@@ -373,9 +397,9 @@ internal sealed class SearchForm : Form
 
         var progress = new Progress<SearchProgress>(report =>
         {
-            if (report.Result is not null)
+            if (report.Results is { Count: > 0 } results)
             {
-                _results.Add(report.Result);
+                AddResults(results);
                 UpdateResultStatus(report.SearchInterrupted);
             }
             else if (!string.IsNullOrWhiteSpace(report.CurrentPath))
@@ -494,10 +518,18 @@ internal sealed class SearchForm : Form
         var textMatcher = options.SearchText
             ? CreateTextMatcher(options.TextPattern, options.TextCaseSensitive, options.TextWholeWords, options.TextRegex)
             : null;
+        var reporter = new SearchProgressReporter(progress);
 
-        foreach (var root in options.Roots)
+        try
         {
-            SearchDirectory(root, 0, options, nameMatcher, textMatcher, progress, token);
+            foreach (var root in options.Roots)
+            {
+                SearchDirectory(root, 0, options, nameMatcher, textMatcher, reporter, token);
+            }
+        }
+        finally
+        {
+            reporter.Flush();
         }
     }
 
@@ -507,11 +539,11 @@ internal sealed class SearchForm : Form
         SearchOptions options,
         Regex nameMatcher,
         Regex? textMatcher,
-        IProgress<SearchProgress> progress,
+        SearchProgressReporter reporter,
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        progress.Report(new SearchProgress(null, directory, false));
+        reporter.ReportCurrentPath(directory);
 
         foreach (var file in SafeFiles(directory))
         {
@@ -527,7 +559,7 @@ internal sealed class SearchForm : Form
                 continue;
             }
 
-            progress.Report(new SearchProgress(SearchResult.FromFile(new FileInfo(file)), null, false));
+            reporter.AddResult(SearchResult.FromFile(new FileInfo(file)));
         }
 
         foreach (var childDirectory in SafeDirectories(directory))
@@ -536,12 +568,12 @@ internal sealed class SearchForm : Form
             var childName = Path.GetFileName(childDirectory);
             if (options.IncludeFolders && nameMatcher.IsMatch(childName))
             {
-                progress.Report(new SearchProgress(SearchResult.FromDirectory(new DirectoryInfo(childDirectory)), null, false));
+                reporter.AddResult(SearchResult.FromDirectory(new DirectoryInfo(childDirectory)));
             }
 
             if (options.MaxDepth is null || depth < options.MaxDepth.Value)
             {
-                SearchDirectory(childDirectory, depth + 1, options, nameMatcher, textMatcher, progress, token);
+                SearchDirectory(childDirectory, depth + 1, options, nameMatcher, textMatcher, reporter, token);
             }
         }
     }
@@ -651,6 +683,28 @@ internal sealed class SearchForm : Form
         viewer.ShowDialog(this);
     }
 
+    private void FeedResultsToPanel()
+    {
+        if (_results.Count == 0)
+        {
+            return;
+        }
+
+        var entries = _results
+            .Where(result => result.Exists)
+            .Select(result => result.ToFileSystemEntry())
+            .ToList();
+        if (entries.Count == 0)
+        {
+            MessageBox.Show(this, "Найденные файлы уже недоступны.", "Поиск", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var caption = $"Результаты поиска: {_maskBox.Text.Trim()}";
+        FeedResultsRequested?.Invoke(entries, caption);
+        Close();
+    }
+
     private void ResetSearch()
     {
         _searchCancellation?.Cancel();
@@ -709,6 +763,7 @@ internal sealed class SearchForm : Form
         var selected = _resultsList.SelectedItem is SearchResult;
         _openButton.Enabled = selected;
         _viewButton.Enabled = _resultsList.SelectedItem is SearchResult { IsDirectory: false };
+        _feedButton.Enabled = _searchCancellation is null && _results.Count > 0;
     }
 
     private void UpdateResultStatus(bool interrupted)
@@ -736,6 +791,33 @@ internal sealed class SearchForm : Form
         _includeFoldersBox.Enabled = !searching;
         _withTextBox.Enabled = !searching;
         UpdateTextSearchControls();
+        UpdateResultButtons();
+    }
+
+    private void AddResults(IReadOnlyList<SearchResult> results)
+    {
+        if (results.Count == 0)
+        {
+            return;
+        }
+
+        var hadSelection = _resultsList.SelectedIndex >= 0;
+        _resultsList.BeginUpdate();
+        _results.RaiseListChangedEvents = false;
+        foreach (var result in results)
+        {
+            _results.Add(result);
+        }
+
+        _results.RaiseListChangedEvents = true;
+        _results.ResetBindings();
+        if (!hadSelection && _results.Count > 0)
+        {
+            _resultsList.SelectedIndex = 0;
+        }
+
+        _resultsList.EndUpdate();
+        UpdateResultButtons();
     }
 
     private int? DepthFromSelection()
@@ -865,7 +947,57 @@ internal sealed class SearchForm : Form
         bool TextRegex,
         IReadOnlyList<Encoding> TextEncodings);
 
-    private sealed record SearchProgress(SearchResult? Result, string? CurrentPath, bool SearchInterrupted);
+    private sealed record SearchProgress(IReadOnlyList<SearchResult>? Results, string? CurrentPath, bool SearchInterrupted);
+
+    private sealed class SearchProgressReporter
+    {
+        private const int BatchSize = 96;
+        private static readonly TimeSpan BatchInterval = TimeSpan.FromMilliseconds(120);
+        private static readonly TimeSpan PathInterval = TimeSpan.FromMilliseconds(160);
+        private readonly IProgress<SearchProgress> _progress;
+        private readonly List<SearchResult> _pending = new();
+        private DateTime _lastBatchUtc = DateTime.UtcNow;
+        private DateTime _lastPathUtc = DateTime.MinValue;
+
+        public SearchProgressReporter(IProgress<SearchProgress> progress)
+        {
+            _progress = progress;
+        }
+
+        public void AddResult(SearchResult result)
+        {
+            _pending.Add(result);
+            if (_pending.Count >= BatchSize || DateTime.UtcNow - _lastBatchUtc >= BatchInterval)
+            {
+                Flush();
+            }
+        }
+
+        public void ReportCurrentPath(string path)
+        {
+            var now = DateTime.UtcNow;
+            if (now - _lastPathUtc < PathInterval)
+            {
+                return;
+            }
+
+            _lastPathUtc = now;
+            _progress.Report(new SearchProgress(null, path, false));
+        }
+
+        public void Flush()
+        {
+            if (_pending.Count == 0)
+            {
+                return;
+            }
+
+            var results = _pending.ToArray();
+            _pending.Clear();
+            _lastBatchUtc = DateTime.UtcNow;
+            _progress.Report(new SearchProgress(results, null, false));
+        }
+    }
 
     private sealed class SearchResult
     {
@@ -876,6 +1008,37 @@ internal sealed class SearchForm : Form
         public long? Size { get; init; }
         public DateTime Modified { get; init; }
         public string DisplayText => FullPath;
+        public bool Exists => IsDirectory ? System.IO.Directory.Exists(FullPath) : System.IO.File.Exists(FullPath);
+
+        public FileSystemEntry ToFileSystemEntry()
+        {
+            var attributes = FileAttributes.Archive;
+            if (Exists)
+            {
+                try
+                {
+                    attributes = File.GetAttributes(FullPath);
+                }
+                catch
+                {
+                    attributes = IsDirectory ? FileAttributes.Directory : FileAttributes.Archive;
+                }
+            }
+            else if (IsDirectory)
+            {
+                attributes = FileAttributes.Directory;
+            }
+
+            return new FileSystemEntry(
+                Name,
+                FullPath,
+                IsDirectory,
+                isParent: false,
+                Size,
+                Modified,
+                attributes,
+                displayName: FullPath);
+        }
 
         public static SearchResult FromFile(FileInfo file)
         {

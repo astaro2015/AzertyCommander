@@ -296,8 +296,8 @@ internal sealed class MainForm : Form
         _rightPanel.ActivatedPanel += (_, _) => SetActivePanel(_rightPanel);
         _leftPanel.PathChanged += (_, _) => UpdateStatus();
         _rightPanel.PathChanged += (_, _) => UpdateStatus();
-        _leftPanel.RenameRequested += (_, args) => RenameEntry(args.Entry);
-        _rightPanel.RenameRequested += (_, args) => RenameEntry(args.Entry);
+        _leftPanel.RenameRequested += (_, args) => RenamePanelEntry(_leftPanel, args.Entry);
+        _rightPanel.RenameRequested += (_, args) => RenamePanelEntry(_rightPanel, args.Entry);
         _leftPanel.FilesDropped += async (_, args) => await DropFilesIntoPanelAsync(args);
         _rightPanel.FilesDropped += async (_, args) => await DropFilesIntoPanelAsync(args);
         _leftPanel.ShellContextMenuRequested += (_, args) => ShowShellContextMenu(args);
@@ -794,9 +794,11 @@ internal sealed class MainForm : Form
 
     private void ViewText()
     {
-        if (_activePanel.IsFtpMode)
+        if (_activePanel.IsFtpMode || _activePanel.IsArchiveMode)
         {
-            MessageBox.Show(this, "FTP-файл сначала скачайте в соседнюю панель клавишей F5.", "Просмотр", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, _activePanel.IsArchiveMode
+                ? "Файл из ZIP сначала распакуйте в соседнюю панель клавишей F5."
+                : "FTP-файл сначала скачайте в соседнюю панель клавишей F5.", "Просмотр", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -813,6 +815,18 @@ internal sealed class MainForm : Form
 
     private async Task CopySelectedAsync()
     {
+        if (_activePanel.IsArchiveMode)
+        {
+            await ExtractArchiveSelectionAsync();
+            return;
+        }
+
+        if (PassivePanel.IsArchiveMode)
+        {
+            MessageBox.Show(this, "Копирование внутрь ZIP пока не поддержано. Из ZIP в обычную панель работает через F5.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode)
         {
             await CopyOrMoveWithFtpAsync(move: false);
@@ -836,6 +850,12 @@ internal sealed class MainForm : Form
 
     private async Task MoveSelectedAsync()
     {
+        if (_activePanel.IsArchiveMode || PassivePanel.IsArchiveMode)
+        {
+            MessageBox.Show(this, "Из ZIP можно распаковать копированием F5. Перемещение для архива пока не делаю.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode)
         {
             await CopyOrMoveWithFtpAsync(move: true);
@@ -854,6 +874,36 @@ internal sealed class MainForm : Form
         }
 
         await RunOperationAsync("Перемещение", token => FileOperations.MoveAsync(entries, PassivePanel.CurrentPath, token.Progress, token.CancellationToken));
+        RefreshPanels();
+    }
+
+    private async Task ExtractArchiveSelectionAsync()
+    {
+        if (PassivePanel.IsFtpMode || PassivePanel.IsArchiveMode)
+        {
+            MessageBox.Show(this, "Распаковка из ZIP сейчас работает в соседнюю обычную локальную панель.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var entries = GetSelectedEntries("Распаковка ZIP");
+        if (entries is null)
+        {
+            return;
+        }
+
+        var targetDirectory = PassivePanel.SettingsPath;
+        if (!Directory.Exists(targetDirectory))
+        {
+            MessageBox.Show(this, "Соседняя локальная папка не найдена.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (!ConfirmConflicts(entries, targetDirectory, "Распаковка ZIP"))
+        {
+            return;
+        }
+
+        await RunOperationAsync("Распаковка ZIP", token => FileOperations.ExtractArchiveEntriesAsync(entries, targetDirectory, token.Progress, token.CancellationToken));
         RefreshPanels();
     }
 
@@ -1144,9 +1194,9 @@ internal sealed class MainForm : Form
 
     private async Task CompareSelectedFilesAsync()
     {
-        if (_leftPanel.IsFtpMode || _rightPanel.IsFtpMode)
+        if (_leftPanel.IsFtpMode || _rightPanel.IsFtpMode || _leftPanel.IsArchiveMode || _rightPanel.IsArchiveMode)
         {
-            MessageBox.Show(this, "Побайтовое сравнение работает для локальных файлов. FTP-файл сначала скачайте.", "Сравнение файлов", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Побайтовое сравнение работает для обычных локальных файлов. FTP/ZIP-файл сначала скачайте или распакуйте.", "Сравнение файлов", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -1266,6 +1316,12 @@ internal sealed class MainForm : Form
 
     private void RenameSelected()
     {
+        if (_activePanel.IsArchiveMode)
+        {
+            MessageBox.Show(this, "Переименование внутри ZIP пока не поддержано.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         var entry = _activePanel.MarkedOrFocusedEntries.FirstOrDefault() ?? _activePanel.FocusedEntry;
         if (entry is null || entry.IsParent)
         {
@@ -1273,6 +1329,24 @@ internal sealed class MainForm : Form
         }
 
         if (_activePanel.IsFtpMode)
+        {
+            _ = RenameFtpEntryAsync(entry);
+            return;
+        }
+
+        RenameEntry(entry);
+    }
+
+    private void RenamePanelEntry(FilePanel panel, FileSystemEntry entry)
+    {
+        SetActivePanel(panel);
+        if (panel.IsArchiveMode)
+        {
+            MessageBox.Show(this, "Переименование внутри ZIP пока не поддержано.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (panel.IsFtpMode)
         {
             _ = RenameFtpEntryAsync(entry);
             return;
@@ -1364,6 +1438,12 @@ internal sealed class MainForm : Form
 
     private async void DeleteSelected(bool permanent)
     {
+        if (_activePanel.IsArchiveMode)
+        {
+            MessageBox.Show(this, "Удаление внутри ZIP пока не поддержано.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         if (_activePanel.IsFtpMode)
         {
             _ = DeleteFtpSelectedAsync();
@@ -1427,7 +1507,7 @@ internal sealed class MainForm : Form
 
     private async Task CreateZipAsync()
     {
-        if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode)
+        if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode || _activePanel.IsArchiveMode || PassivePanel.IsArchiveMode)
         {
             MessageBox.Show(this, "ZIP-операции пока работают только между локальными панелями.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -1447,7 +1527,13 @@ internal sealed class MainForm : Form
 
     private async Task ExtractZipAsync()
     {
-        if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode)
+        if (_activePanel.IsArchiveMode)
+        {
+            await ExtractArchiveSelectionAsync();
+            return;
+        }
+
+        if (_activePanel.IsFtpMode || PassivePanel.IsFtpMode || PassivePanel.IsArchiveMode)
         {
             MessageBox.Show(this, "ZIP-операции пока работают только между локальными панелями.", "Распаковка ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -1497,6 +1583,12 @@ internal sealed class MainForm : Form
             _activePanel.LoadPath(targetDirectory);
             _activePanel.SelectPath(path);
             _activePanel.FocusList();
+        };
+        search.FeedResultsRequested += (entries, caption) =>
+        {
+            _activePanel.LoadSearchResults(entries, caption);
+            _activePanel.FocusList();
+            UpdateStatus();
         };
         search.ShowDialog(this);
     }
@@ -1801,9 +1893,11 @@ internal sealed class MainForm : Form
 
     private void CopySelectionToClipboard(bool cut)
     {
-        if (_activePanel.IsFtpMode)
+        if (_activePanel.IsFtpMode || _activePanel.IsArchiveMode)
         {
-            MessageBox.Show(this, "Буфер Windows работает с локальными файлами. Для FTP используйте F5/F6.", cut ? "Вырезать" : "Копировать", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, _activePanel.IsArchiveMode
+                ? "Буфер Windows работает с обычными локальными файлами. Из ZIP используйте F5 для распаковки."
+                : "Буфер Windows работает с локальными файлами. Для FTP используйте F5/F6.", cut ? "Вырезать" : "Копировать", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -1823,9 +1917,11 @@ internal sealed class MainForm : Form
 
     private async Task PasteFromClipboardAsync()
     {
-        if (_activePanel.IsFtpMode)
+        if (_activePanel.IsFtpMode || _activePanel.IsArchiveMode)
         {
-            MessageBox.Show(this, "Вставка из буфера в FTP пока не поддержана. Для закачки откройте FTP в соседней панели и нажмите F5 на локальных файлах.", "Вставка", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, _activePanel.IsArchiveMode
+                ? "Вставка внутрь ZIP пока не поддержана."
+                : "Вставка из буфера в FTP пока не поддержана. Для закачки откройте FTP в соседней панели и нажмите F5 на локальных файлах.", "Вставка", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -2203,7 +2299,7 @@ internal sealed class MainForm : Form
     {
         MessageBox.Show(
             this,
-            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nTab переключить панель\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nNum+ добавить выделение по маске\nNum- убрать выделение по маске\nNum* выделить всё\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+D избранные каталоги\nCtrl+F поиск\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: обычный бросок копирует, Shift перемещает\nFTP: подключение в активную панель, F5/F6 обмен с локальной панелью\nFTP сервер: обычный FTP без TLS",
+            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nTab переключить панель\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nNum+ добавить выделение по маске\nNum- убрать выделение по маске\nNum* выделить всё\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+D избранные каталоги\nCtrl+F поиск, найденное можно вывести в панель\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: обычный бросок копирует, Shift перемещает\nZIP: Enter открыть как папку, F5 распаковать выбранное\nFTP: подключение в активную панель, F5/F6 обмен с локальной панелью, keep-alive от простоя\nFTP сервер: обычный FTP без TLS",
             "О программе",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);

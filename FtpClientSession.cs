@@ -9,9 +9,12 @@ namespace AzertyCommander;
 internal sealed class FtpClientSession : IDisposable
 {
     private readonly Encoding _encoding = new UTF8Encoding(false);
+    private readonly SemaphoreSlim _controlLock = new(1, 1);
     private TcpClient? _client;
     private StreamReader? _reader;
     private StreamWriter? _writer;
+    private System.Threading.Timer? _keepAliveTimer;
+    private DateTime _lastControlActivityUtc = DateTime.MinValue;
 
     public string CurrentDirectory { get; private set; } = "/";
 
@@ -21,39 +24,52 @@ internal sealed class FtpClientSession : IDisposable
     {
         Disconnect();
 
-        _client = new TcpClient { NoDelay = true };
-        await _client.ConnectAsync(options.Host, options.Port, token);
-
-        var stream = _client.GetStream();
-        _reader = new StreamReader(stream, _encoding, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
-        _writer = new StreamWriter(stream, _encoding) { NewLine = "\r\n", AutoFlush = true };
-
-        var welcome = await ReadReplyAsync(token);
-        EnsurePositive(welcome, "FTP сервер не принял подключение.");
-
-        var userReply = await SendCommandAsync("USER " + CleanArgument(options.UserName), token);
-        if (userReply.Code == 331)
+        await _controlLock.WaitAsync(token);
+        try
         {
-            var passReply = await SendCommandAsync("PASS " + CleanArgument(options.Password), token);
-            EnsurePositive(passReply, "FTP сервер не принял пароль.");
-        }
-        else
-        {
-            EnsurePositive(userReply, "FTP сервер не принял пользователя.");
-        }
+            _client = new TcpClient { NoDelay = true };
+            await _client.ConnectAsync(options.Host, options.Port, token);
 
-        await TryCommandAsync("OPTS UTF8 ON", token);
-        EnsurePositive(await SendCommandAsync("TYPE I", token), "FTP сервер не включил двоичный режим.");
-        CurrentDirectory = await GetWorkingDirectoryAsync(token);
+            var stream = _client.GetStream();
+            _reader = new StreamReader(stream, _encoding, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+            _writer = new StreamWriter(stream, _encoding) { NewLine = "\r\n", AutoFlush = true };
+
+            var welcome = await ReadReplyAsync(token);
+            EnsurePositive(welcome, "FTP сервер не принял подключение.");
+
+            var userReply = await SendCommandAsync("USER " + CleanArgument(options.UserName), token);
+            if (userReply.Code == 331)
+            {
+                var passReply = await SendCommandAsync("PASS " + CleanArgument(options.Password), token);
+                EnsurePositive(passReply, "FTP сервер не принял пароль.");
+            }
+            else
+            {
+                EnsurePositive(userReply, "FTP сервер не принял пользователя.");
+            }
+
+            await TryCommandAsync("OPTS UTF8 ON", token);
+            EnsurePositive(await SendCommandAsync("TYPE I", token), "FTP сервер не включил двоичный режим.");
+            CurrentDirectory = await GetWorkingDirectoryAsync(token);
+            StartKeepAlive();
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
     }
 
     public void Disconnect()
     {
+        _keepAliveTimer?.Dispose();
+        _keepAliveTimer = null;
+
         try
         {
-            if (Connected)
+            if (_writer is not null && Connected)
             {
-                _ = SendCommandAsync("QUIT", CancellationToken.None);
+                _writer.WriteLine("QUIT");
+                _writer.Flush();
             }
         }
         catch
@@ -72,10 +88,31 @@ internal sealed class FtpClientSession : IDisposable
 
     public async Task<IReadOnlyList<FtpRemoteEntry>> ListAsync(CancellationToken token)
     {
-        return await ListAsync(CurrentDirectory, token);
+        await _controlLock.WaitAsync(token);
+        try
+        {
+            return await ListCoreAsync(CurrentDirectory, token);
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
     }
 
     public async Task<IReadOnlyList<FtpRemoteEntry>> ListAsync(string remoteDirectory, CancellationToken token)
+    {
+        await _controlLock.WaitAsync(token);
+        try
+        {
+            return await ListCoreAsync(remoteDirectory, token);
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
+    }
+
+    private async Task<IReadOnlyList<FtpRemoteEntry>> ListCoreAsync(string remoteDirectory, CancellationToken token)
     {
         var path = NormalizeRemotePath(remoteDirectory);
         try
@@ -92,65 +129,168 @@ internal sealed class FtpClientSession : IDisposable
 
     public async Task ChangeDirectoryAsync(string path, CancellationToken token)
     {
-        var reply = await SendCommandAsync("CWD " + NormalizeRemotePath(path), token);
-        EnsurePositive(reply, "FTP сервер не открыл папку.");
-        CurrentDirectory = await GetWorkingDirectoryAsync(token);
+        await _controlLock.WaitAsync(token);
+        try
+        {
+            var reply = await SendCommandAsync("CWD " + NormalizeRemotePath(path), token);
+            EnsurePositive(reply, "FTP сервер не открыл папку.");
+            CurrentDirectory = await GetWorkingDirectoryAsync(token);
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
     }
 
     public async Task CreateDirectoryAsync(string path, CancellationToken token)
     {
-        var reply = await SendCommandAsync("MKD " + NormalizeRemotePath(path), token);
-        EnsurePositive(reply, "FTP сервер не создал папку.");
+        await _controlLock.WaitAsync(token);
+        try
+        {
+            var reply = await SendCommandAsync("MKD " + NormalizeRemotePath(path), token);
+            EnsurePositive(reply, "FTP сервер не создал папку.");
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
     }
 
     public async Task DeleteFileAsync(string path, CancellationToken token)
     {
-        var reply = await SendCommandAsync("DELE " + NormalizeRemotePath(path), token);
-        EnsurePositive(reply, "FTP сервер не удалил файл.");
+        await _controlLock.WaitAsync(token);
+        try
+        {
+            var reply = await SendCommandAsync("DELE " + NormalizeRemotePath(path), token);
+            EnsurePositive(reply, "FTP сервер не удалил файл.");
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
     }
 
     public async Task RemoveDirectoryAsync(string path, CancellationToken token)
     {
-        var reply = await SendCommandAsync("RMD " + NormalizeRemotePath(path), token);
-        EnsurePositive(reply, "FTP сервер не удалил папку.");
+        await _controlLock.WaitAsync(token);
+        try
+        {
+            var reply = await SendCommandAsync("RMD " + NormalizeRemotePath(path), token);
+            EnsurePositive(reply, "FTP сервер не удалил папку.");
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
     }
 
     public async Task RenameAsync(string oldPath, string newPath, CancellationToken token)
     {
-        var fromReply = await SendCommandAsync("RNFR " + NormalizeRemotePath(oldPath), token);
-        EnsurePositive(fromReply, "FTP сервер не начал переименование.");
-        var toReply = await SendCommandAsync("RNTO " + NormalizeRemotePath(newPath), token);
-        EnsurePositive(toReply, "FTP сервер не переименовал элемент.");
+        await _controlLock.WaitAsync(token);
+        try
+        {
+            var fromReply = await SendCommandAsync("RNFR " + NormalizeRemotePath(oldPath), token);
+            EnsurePositive(fromReply, "FTP сервер не начал переименование.");
+            var toReply = await SendCommandAsync("RNTO " + NormalizeRemotePath(newPath), token);
+            EnsurePositive(toReply, "FTP сервер не переименовал элемент.");
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
     }
 
     public async Task DownloadFileAsync(string remotePath, string localPath, IProgress<string>? progress, CancellationToken token)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(localPath) ?? ".");
-        using var file = File.Create(localPath);
-        await ExecuteDataStreamCommandAsync(
-            "RETR " + NormalizeRemotePath(remotePath),
-            async stream =>
-            {
-                await CopyStreamAsync(stream, file, progress, Path.GetFileName(localPath), token);
-            },
-            token);
+        await _controlLock.WaitAsync(token);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(localPath) ?? ".");
+            using var file = File.Create(localPath);
+            await ExecuteDataStreamCommandAsync(
+                "RETR " + NormalizeRemotePath(remotePath),
+                async stream =>
+                {
+                    await CopyStreamAsync(stream, file, progress, Path.GetFileName(localPath), token);
+                },
+                token);
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
     }
 
     public async Task UploadFileAsync(string localPath, string remotePath, IProgress<string>? progress, CancellationToken token)
     {
-        using var file = File.OpenRead(localPath);
-        await ExecuteDataStreamCommandAsync(
-            "STOR " + NormalizeRemotePath(remotePath),
-            async stream =>
-            {
-                await CopyStreamAsync(file, stream, progress, Path.GetFileName(localPath), token);
-            },
-            token);
+        await _controlLock.WaitAsync(token);
+        try
+        {
+            using var file = File.OpenRead(localPath);
+            await ExecuteDataStreamCommandAsync(
+                "STOR " + NormalizeRemotePath(remotePath),
+                async stream =>
+                {
+                    await CopyStreamAsync(file, stream, progress, Path.GetFileName(localPath), token);
+                },
+                token);
+        }
+        finally
+        {
+            _controlLock.Release();
+        }
     }
 
     public void Dispose()
     {
         Disconnect();
+        _controlLock.Dispose();
+    }
+
+    private void StartKeepAlive()
+    {
+        _keepAliveTimer?.Dispose();
+        _lastControlActivityUtc = DateTime.UtcNow;
+        _keepAliveTimer = new System.Threading.Timer(_ => _ = KeepAliveAsync(), null, TimeSpan.FromSeconds(45), TimeSpan.FromSeconds(45));
+    }
+
+    private async Task KeepAliveAsync()
+    {
+        if (_writer is null || !Connected || DateTime.UtcNow - _lastControlActivityUtc < TimeSpan.FromSeconds(40))
+        {
+            return;
+        }
+
+        try
+        {
+            if (!_controlLock.Wait(0))
+            {
+                return;
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_writer is not null && Connected)
+            {
+                await TryCommandAsync("NOOP", CancellationToken.None);
+            }
+        }
+        finally
+        {
+            try
+            {
+                _controlLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The session is already closed.
+            }
+        }
     }
 
     private async Task<string> GetWorkingDirectoryAsync(CancellationToken token)
@@ -234,9 +374,12 @@ internal sealed class FtpClientSession : IDisposable
             throw new InvalidOperationException("FTP подключение не открыто.");
         }
 
+        _lastControlActivityUtc = DateTime.UtcNow;
         await _writer.WriteLineAsync(command.AsMemory(), token);
         await _writer.FlushAsync(token);
-        return await ReadReplyAsync(token);
+        var reply = await ReadReplyAsync(token);
+        _lastControlActivityUtc = DateTime.UtcNow;
+        return reply;
     }
 
     private async Task<FtpReply?> TryCommandAsync(string command, CancellationToken token)

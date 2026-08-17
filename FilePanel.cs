@@ -35,8 +35,13 @@ internal sealed class FilePanel : UserControl
     private bool _loadingDrives;
     private bool _fillingColumnWidths;
     private bool _isFtpMode;
+    private bool _isSearchMode;
+    private bool _isArchiveMode;
     private int _lastColumnFillWidth;
     private string _ftpConnectionName = string.Empty;
+    private string _searchCaption = string.Empty;
+    private string _archivePath = string.Empty;
+    private string _archiveInternalPath = string.Empty;
     private string _lastLocalPath = string.Empty;
     private string _sortColumn = nameof(FileSystemEntry.DisplayName);
     private bool _sortAscending = true;
@@ -62,10 +67,16 @@ internal sealed class FilePanel : UserControl
 
     public bool IsFtpMode => _isFtpMode;
 
-    public string SettingsPath => _isFtpMode ? _lastLocalPath : CurrentPath;
+    public bool IsSearchMode => _isSearchMode;
+
+    public bool IsArchiveMode => _isArchiveMode;
+
+    public string SettingsPath => _isFtpMode || _isSearchMode || _isArchiveMode ? _lastLocalPath : CurrentPath;
 
     public string CommandPathText => _isFtpMode
         ? $"ftp:{_ftpConnectionName}:{CurrentPath}"
+        : _isSearchMode ? "[Поиск] " + _searchCaption
+        : _isArchiveMode ? "[ZIP] " + _archivePath + (_archiveInternalPath.Length == 0 ? string.Empty : "\\" + _archiveInternalPath.Replace('/', '\\'))
         : CurrentPath;
 
     public IReadOnlyList<FileSystemEntry> Entries => _entries.Where(entry => !entry.IsParent).ToList();
@@ -134,6 +145,9 @@ internal sealed class FilePanel : UserControl
             ExitFtpMode();
         }
 
+        ExitSearchMode();
+        ExitArchiveMode();
+
         if (File.Exists(path))
         {
             selectPathAfterLoad ??= path;
@@ -175,6 +189,8 @@ internal sealed class FilePanel : UserControl
 
     public void LoadFtpEntries(string connectionName, string remotePath, IReadOnlyList<FtpRemoteEntry> remoteEntries, string? selectPathAfterLoad = null)
     {
+        ExitSearchMode();
+        ExitArchiveMode();
         var normalizedPath = FtpClientSession.NormalizeRemotePath(remotePath);
         if (!_isFtpMode || !string.Equals(CurrentPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -233,6 +249,124 @@ internal sealed class FilePanel : UserControl
         PathChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    public void LoadArchive(string archivePath)
+    {
+        LoadArchivePath(archivePath, string.Empty, null);
+    }
+
+    private void LoadArchivePath(string archivePath, string internalPath, string? selectPathAfterLoad)
+    {
+        if (_isFtpMode)
+        {
+            FtpDisconnectRequested?.Invoke(this, EventArgs.Empty);
+            ExitFtpMode();
+        }
+
+        ExitSearchMode();
+        ExitArchiveMode();
+
+        var fullArchivePath = Path.GetFullPath(archivePath);
+        if (!FileOperations.IsZipFile(fullArchivePath))
+        {
+            MessageBox.Show(this, "ZIP-файл не найден.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var parent = Path.GetDirectoryName(fullArchivePath);
+        if (string.IsNullOrWhiteSpace(parent) || !Directory.Exists(parent))
+        {
+            MessageBox.Show(this, "Папка ZIP-файла не найдена.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        IReadOnlyList<FileSystemEntry> loaded;
+        try
+        {
+            loaded = FileOperations.ListZipEntries(fullArchivePath, internalPath);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        _isArchiveMode = true;
+        _archivePath = fullArchivePath;
+        _archiveInternalPath = NormalizeArchivePanelPath(internalPath);
+        CurrentPath = parent;
+        _lastLocalPath = parent;
+        _markedPaths.Clear();
+
+        _entries.RaiseListChangedEvents = false;
+        _entries.Clear();
+        foreach (var entry in loaded)
+        {
+            _entries.Add(entry);
+        }
+
+        _entries.RaiseListChangedEvents = true;
+        _entries.ResetBindings();
+        _grid.Invalidate();
+        _pathBox.Text = CommandPathText;
+        UpdateDriveSelection();
+        UpdateSpaceLabel();
+        UpdateStatus(null);
+        ScheduleFillColumnsToGridWidth(force: true);
+        if (!string.IsNullOrWhiteSpace(selectPathAfterLoad) && SelectPathCore(selectPathAfterLoad, focusList: false))
+        {
+            PathChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        SelectFirstRow();
+        PathChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void LoadSearchResults(IReadOnlyList<FileSystemEntry> results, string caption)
+    {
+        if (_isFtpMode)
+        {
+            FtpDisconnectRequested?.Invoke(this, EventArgs.Empty);
+            ExitFtpMode();
+        }
+
+        ExitArchiveMode();
+
+        var fallbackPath = Directory.Exists(CurrentPath)
+            ? CurrentPath
+            : results
+                .Select(entry => entry.IsDirectory ? entry.FullPath : Path.GetDirectoryName(entry.FullPath))
+                .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path)) ?? _lastLocalPath;
+        if (string.IsNullOrWhiteSpace(fallbackPath) || !Directory.Exists(fallbackPath))
+        {
+            fallbackPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        }
+
+        _isSearchMode = true;
+        _searchCaption = string.IsNullOrWhiteSpace(caption) ? "Результаты поиска" : caption.Trim();
+        CurrentPath = fallbackPath;
+        _lastLocalPath = fallbackPath;
+        _markedPaths.Clear();
+
+        _entries.RaiseListChangedEvents = false;
+        _entries.Clear();
+        foreach (var entry in results.Where(entry => !entry.IsParent))
+        {
+            _entries.Add(entry);
+        }
+
+        _entries.RaiseListChangedEvents = true;
+        _entries.ResetBindings();
+        _grid.Invalidate();
+        _pathBox.Text = "[Поиск] " + _searchCaption;
+        UpdateDriveSelection();
+        UpdateSpaceLabel();
+        UpdateStatus(null);
+        ScheduleFillColumnsToGridWidth(force: true);
+        SelectFirstRow();
+        PathChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     public void ExitFtpMode()
     {
         if (!_isFtpMode)
@@ -250,6 +384,29 @@ internal sealed class FilePanel : UserControl
         UpdateSpaceLabel();
         UpdateStatus(null);
         PathChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ExitSearchMode()
+    {
+        if (!_isSearchMode)
+        {
+            return;
+        }
+
+        _isSearchMode = false;
+        _searchCaption = string.Empty;
+    }
+
+    private void ExitArchiveMode()
+    {
+        if (!_isArchiveMode)
+        {
+            return;
+        }
+
+        _isArchiveMode = false;
+        _archivePath = string.Empty;
+        _archiveInternalPath = string.Empty;
     }
 
     private static FileSystemEntry CreateFtpFileSystemEntry(FtpRemoteEntry entry)
@@ -328,8 +485,17 @@ internal sealed class FilePanel : UserControl
 
     public void RefreshList()
     {
-        if (_isFtpMode)
+        if (_isFtpMode || _isSearchMode || _isArchiveMode)
         {
+            if (_isSearchMode)
+            {
+                UpdateStatus(null);
+            }
+            else if (_isArchiveMode && !string.IsNullOrWhiteSpace(_archivePath))
+            {
+                LoadArchivePath(_archivePath, _archiveInternalPath, FocusedEntry?.ArchiveEntryPath);
+            }
+
             return;
         }
 
@@ -540,6 +706,12 @@ internal sealed class FilePanel : UserControl
             return;
         }
 
+        if (_isArchiveMode)
+        {
+            OpenArchiveEntry(entry);
+            return;
+        }
+
         if (entry.IsDirectory)
         {
             if (entry.IsParent)
@@ -556,6 +728,12 @@ internal sealed class FilePanel : UserControl
 
         try
         {
+            if (FileOperations.IsZipFile(entry.FullPath))
+            {
+                LoadArchive(entry.FullPath);
+                return;
+            }
+
             Process.Start(new ProcessStartInfo(entry.FullPath) { UseShellExecute = true });
         }
         catch (Exception ex)
@@ -583,6 +761,16 @@ internal sealed class FilePanel : UserControl
             return;
         }
 
+        if (_isArchiveMode)
+        {
+            if (FocusedEntry is { IsDirectory: true } archiveEntry)
+            {
+                OpenArchiveEntry(archiveEntry);
+            }
+
+            return;
+        }
+
         if (FocusedEntry is { IsDirectory: true } entry)
         {
             if (entry.IsParent)
@@ -604,12 +792,91 @@ internal sealed class FilePanel : UserControl
             return;
         }
 
+        if (_isArchiveMode)
+        {
+            NavigateArchiveUp();
+            return;
+        }
+
+        if (_isSearchMode)
+        {
+            LoadPath(CurrentPath);
+            return;
+        }
+
         var parent = Directory.GetParent(CurrentPath);
         if (parent is not null)
         {
             var previousPath = CurrentPath;
             LoadPath(parent.FullName, previousPath);
         }
+    }
+
+    private void OpenArchiveEntry(FileSystemEntry entry)
+    {
+        if (!entry.IsDirectory)
+        {
+            MessageBox.Show(this, "Файл из ZIP можно распаковать в соседнюю панель клавишей F5.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (entry.IsParent)
+        {
+            NavigateArchiveUp();
+            return;
+        }
+
+        LoadArchivePath(_archivePath, entry.ArchiveEntryPath, null);
+    }
+
+    private void NavigateArchiveUp()
+    {
+        if (!_isArchiveMode)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_archiveInternalPath))
+        {
+            var archivePath = _archivePath;
+            var parent = Path.GetDirectoryName(archivePath);
+            if (!string.IsNullOrWhiteSpace(parent))
+            {
+                LoadPath(parent, archivePath);
+            }
+
+            return;
+        }
+
+        var previousPath = _archiveInternalPath;
+        var parentPath = FileOperations.ParentZipEntryPath(previousPath);
+        LoadArchivePath(_archivePath, parentPath, previousPath);
+    }
+
+    private static string NormalizeArchivePanelPath(string path)
+    {
+        var parts = new List<string>();
+        foreach (var part in path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part == ".")
+            {
+                continue;
+            }
+
+            if (part == "..")
+            {
+                if (parts.Count > 0)
+                {
+                    parts.RemoveAt(parts.Count - 1);
+                }
+
+                continue;
+            }
+
+            parts.Add(part);
+        }
+
+        return string.Join('/', parts);
     }
 
     public void ToggleFocusedSelectionAndMoveNext()
@@ -950,6 +1217,10 @@ internal sealed class FilePanel : UserControl
                 {
                     FtpPathRequested?.Invoke(this, new FilePanelPathEventArgs(_pathBox.Text));
                 }
+                else if (_isArchiveMode || _isSearchMode)
+                {
+                    LoadPath(CurrentPath);
+                }
                 else
                 {
                     LoadPath(_pathBox.Text);
@@ -1114,6 +1385,7 @@ internal sealed class FilePanel : UserControl
                 _dragStartPoint = args.Location;
                 var hit = _grid.HitTest(args.X, args.Y);
                 _canStartFileDrag =
+                    !_isArchiveMode &&
                     hit.RowIndex >= 0 &&
                     _grid.Rows[hit.RowIndex].DataBoundItem is FileSystemEntry { IsParent: false };
             }
@@ -1240,6 +1512,11 @@ internal sealed class FilePanel : UserControl
 
     private string GetDropTargetDirectory(DragEventArgs args, bool useGridHitTest)
     {
+        if (_isArchiveMode)
+        {
+            return CurrentPath;
+        }
+
         if (!useGridHitTest)
         {
             return CurrentPath;
@@ -1352,7 +1629,7 @@ internal sealed class FilePanel : UserControl
     private void HandleShellContextMenuClick(DataGridViewCellMouseEventArgs args)
     {
         ResetSlowRenameClick();
-        if (_isFtpMode)
+        if (_isFtpMode || _isArchiveMode)
         {
             return;
         }
@@ -1459,6 +1736,18 @@ internal sealed class FilePanel : UserControl
         if (_isFtpMode)
         {
             _spaceLabel.Text = "FTP: " + _ftpConnectionName;
+            return;
+        }
+
+        if (_isSearchMode)
+        {
+            _spaceLabel.Text = $"Результаты поиска: {_entries.Count(entry => !entry.IsParent):N0}";
+            return;
+        }
+
+        if (_isArchiveMode)
+        {
+            _spaceLabel.Text = $"ZIP: {Path.GetFileName(_archivePath)}";
             return;
         }
 

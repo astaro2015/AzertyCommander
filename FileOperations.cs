@@ -224,12 +224,135 @@ internal static class FileOperations
         }, token);
     }
 
+    public static bool IsZipFile(string path)
+    {
+        return File.Exists(path) && string.Equals(Path.GetExtension(path), ".zip", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static string ParentZipEntryPath(string entryPath)
+    {
+        var clean = NormalizeZipEntryPath(entryPath);
+        var separator = clean.LastIndexOf('/');
+        return separator <= 0 ? string.Empty : clean[..separator];
+    }
+
+    public static IReadOnlyList<FileSystemEntry> ListZipEntries(string zipPath, string internalPath)
+    {
+        var archivePath = Path.GetFullPath(zipPath);
+        var currentPath = NormalizeZipEntryPath(internalPath);
+        var prefix = currentPath.Length == 0 ? string.Empty : currentPath + "/";
+        var items = new Dictionary<string, ZipListItem>(StringComparer.OrdinalIgnoreCase);
+
+        using var archive = OpenZipRead(archivePath);
+        foreach (var entry in archive.Entries)
+        {
+            var rawName = NormalizeZipName(entry.FullName);
+            var entryIsDirectory = rawName.EndsWith("/", StringComparison.Ordinal);
+            var fullName = NormalizeZipEntryPath(rawName);
+            if (fullName.Length == 0)
+            {
+                continue;
+            }
+
+            if (prefix.Length > 0 && !fullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var remainder = prefix.Length == 0 ? fullName : fullName[prefix.Length..];
+            if (remainder.Length == 0)
+            {
+                continue;
+            }
+
+            var separator = remainder.IndexOf('/');
+            var name = separator >= 0 ? remainder[..separator] : remainder;
+            var isDirectory = separator >= 0 || entryIsDirectory;
+            var entryPath = prefix + name;
+
+            if (!items.TryGetValue(name, out var item))
+            {
+                item = new ZipListItem(name, entryPath, isDirectory);
+                items[name] = item;
+            }
+
+            item.IsDirectory |= isDirectory;
+            if (!isDirectory)
+            {
+                item.Size = entry.Length;
+            }
+
+            if (entry.LastWriteTime.LocalDateTime > item.Modified)
+            {
+                item.Modified = entry.LastWriteTime.LocalDateTime;
+            }
+        }
+
+        var loaded = new List<FileSystemEntry>();
+        if (currentPath.Length > 0)
+        {
+            loaded.Add(CreateZipFileSystemEntry("..", archivePath, ParentZipEntryPath(currentPath), isDirectory: true, isParent: true, null, DateTime.MinValue));
+        }
+
+        loaded.AddRange(items.Values
+            .OrderByDescending(item => item.IsDirectory)
+            .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+            .Select(item => CreateZipFileSystemEntry(
+                item.Name,
+                archivePath,
+                item.EntryPath,
+                item.IsDirectory,
+                isParent: false,
+                item.IsDirectory ? null : item.Size,
+                item.Modified == DateTime.MinValue ? File.GetLastWriteTime(archivePath) : item.Modified)));
+
+        return loaded;
+    }
+
+    public static Task ExtractArchiveEntriesAsync(IReadOnlyList<FileSystemEntry> entries, string targetDirectory, IProgress<OperationProgress> progress, CancellationToken token)
+    {
+        return Task.Run(() =>
+        {
+            var archiveEntries = entries
+                .Where(entry => entry.IsArchiveEntry && !entry.IsParent)
+                .ToList();
+            if (archiveEntries.Count == 0)
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(targetDirectory);
+            var state = new TransferProgressState(
+                progress,
+                Math.Max(1, CountArchiveSelectionItems(archiveEntries)),
+                CountArchiveSelectionBytes(archiveEntries));
+
+            foreach (var group in archiveEntries.GroupBy(entry => entry.ArchivePath, StringComparer.OrdinalIgnoreCase))
+            {
+                token.ThrowIfCancellationRequested();
+                using var archive = OpenZipRead(group.Key);
+                foreach (var entry in group)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (entry.IsDirectory)
+                    {
+                        ExtractArchiveDirectory(archive, entry, targetDirectory, state, token);
+                    }
+                    else
+                    {
+                        ExtractArchiveFile(archive, entry, targetDirectory, state, token);
+                    }
+                }
+            }
+        }, token);
+    }
+
     public static bool HasTopLevelConflicts(IReadOnlyList<FileSystemEntry> entries, string targetDirectory)
     {
         return entries.Any(entry =>
         {
             var destination = Path.Combine(targetDirectory, entry.Name);
-            if (IsSamePath(entry.FullPath, destination))
+            if (!entry.IsArchiveEntry && IsSamePath(entry.FullPath, destination))
             {
                 return false;
             }
@@ -412,6 +535,176 @@ internal static class FileOperations
         }
 
         state.CompleteItem(relativePath);
+    }
+
+    private static FileSystemEntry CreateZipFileSystemEntry(
+        string name,
+        string archivePath,
+        string entryPath,
+        bool isDirectory,
+        bool isParent,
+        long? size,
+        DateTime modified)
+    {
+        var virtualPath = archivePath + "|" + NormalizeZipEntryPath(entryPath);
+        return new FileSystemEntry(
+            name,
+            virtualPath,
+            isDirectory,
+            isParent,
+            size,
+            modified,
+            isDirectory ? FileAttributes.Directory : FileAttributes.Archive,
+            isArchiveEntry: true,
+            archivePath: archivePath,
+            archiveEntryPath: NormalizeZipEntryPath(entryPath));
+    }
+
+    private static int CountArchiveSelectionItems(IReadOnlyList<FileSystemEntry> entries)
+    {
+        var count = 0;
+        foreach (var group in entries.GroupBy(entry => entry.ArchivePath, StringComparer.OrdinalIgnoreCase))
+        {
+            using var archive = OpenZipRead(group.Key);
+            foreach (var entry in group)
+            {
+                count += entry.IsDirectory
+                    ? Math.Max(1, MatchingZipEntries(archive, entry).Count())
+                    : 1;
+            }
+        }
+
+        return count;
+    }
+
+    private static long CountArchiveSelectionBytes(IReadOnlyList<FileSystemEntry> entries)
+    {
+        var bytes = 0L;
+        foreach (var group in entries.GroupBy(entry => entry.ArchivePath, StringComparer.OrdinalIgnoreCase))
+        {
+            using var archive = OpenZipRead(group.Key);
+            foreach (var entry in group)
+            {
+                if (entry.IsDirectory)
+                {
+                    bytes += MatchingZipEntries(archive, entry)
+                        .Where(zipEntry => !IsZipDirectoryEntry(zipEntry))
+                        .Sum(zipEntry => zipEntry.Length);
+                }
+                else if (FindZipEntry(archive, entry.ArchiveEntryPath) is { } zipEntry)
+                {
+                    bytes += zipEntry.Length;
+                }
+            }
+        }
+
+        return bytes;
+    }
+
+    private static void ExtractArchiveDirectory(ZipArchive archive, FileSystemEntry entry, string targetDirectory, TransferProgressState state, CancellationToken token)
+    {
+        var destinationRoot = Path.Combine(targetDirectory, entry.Name);
+        Directory.CreateDirectory(destinationRoot);
+        state.CompleteItem(entry.Name);
+
+        foreach (var zipEntry in MatchingZipEntries(archive, entry))
+        {
+            token.ThrowIfCancellationRequested();
+            var relativePath = RelativeZipPath(entry.ArchiveEntryPath, zipEntry.FullName);
+            if (string.IsNullOrWhiteSpace(relativePath))
+            {
+                continue;
+            }
+
+            var destinationPath = GetSafeExtractPath(destinationRoot, relativePath);
+            if (IsZipDirectoryEntry(zipEntry))
+            {
+                Directory.CreateDirectory(destinationPath);
+                state.CompleteItem(relativePath);
+            }
+            else
+            {
+                ExtractZipArchiveEntryToPath(zipEntry, destinationPath, state, token);
+            }
+        }
+    }
+
+    private static void ExtractArchiveFile(ZipArchive archive, FileSystemEntry entry, string targetDirectory, TransferProgressState state, CancellationToken token)
+    {
+        var zipEntry = FindZipEntry(archive, entry.ArchiveEntryPath);
+        if (zipEntry is null)
+        {
+            return;
+        }
+
+        var destinationPath = GetSafeExtractPath(targetDirectory, entry.Name);
+        ExtractZipArchiveEntryToPath(zipEntry, destinationPath, state, token);
+    }
+
+    private static void ExtractZipArchiveEntryToPath(ZipArchiveEntry entry, string destinationPath, TransferProgressState state, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath) ?? ".");
+        state.Report(entry.FullName, force: true);
+
+        var buffer = new byte[TransferBufferSize];
+        using var source = entry.Open();
+        using var destination = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, TransferBufferSize, FileOptions.SequentialScan);
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            var read = source.Read(buffer, 0, buffer.Length);
+            if (read == 0)
+            {
+                break;
+            }
+
+            destination.Write(buffer, 0, read);
+            state.AddCompletedBytes(read, entry.FullName);
+        }
+
+        state.CompleteItem(entry.FullName);
+    }
+
+    private static ZipArchiveEntry? FindZipEntry(ZipArchive archive, string entryPath)
+    {
+        var normalizedPath = NormalizeZipEntryPath(entryPath);
+        return archive.Entries.FirstOrDefault(entry =>
+            !IsZipDirectoryEntry(entry) &&
+            string.Equals(NormalizeZipEntryPath(entry.FullName), normalizedPath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IEnumerable<ZipArchiveEntry> MatchingZipEntries(ZipArchive archive, FileSystemEntry entry)
+    {
+        var selectionPath = NormalizeZipEntryPath(entry.ArchiveEntryPath);
+        var prefix = selectionPath.Length == 0 ? string.Empty : selectionPath + "/";
+        return archive.Entries.Where(zipEntry =>
+        {
+            var fullName = NormalizeZipEntryPath(zipEntry.FullName);
+            return string.Equals(fullName, selectionPath, StringComparison.OrdinalIgnoreCase) ||
+                (prefix.Length > 0 && fullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        });
+    }
+
+    private static string RelativeZipPath(string parentPath, string childPath)
+    {
+        var parent = NormalizeZipEntryPath(parentPath);
+        var child = NormalizeZipEntryPath(childPath);
+        if (parent.Length == 0)
+        {
+            return child;
+        }
+
+        var prefix = parent + "/";
+        return child.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? child[prefix.Length..]
+            : string.Empty;
+    }
+
+    private static bool IsZipDirectoryEntry(ZipArchiveEntry entry)
+    {
+        var name = NormalizeZipName(entry.FullName);
+        return name.EndsWith("/", StringComparison.Ordinal);
     }
 
     private static void DeletePermanently(IReadOnlyList<FileSystemEntry> entries, IProgress<OperationProgress> progress, CancellationToken token)
@@ -777,6 +1070,38 @@ internal static class FileOperations
         return path.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
     }
 
+    private static string NormalizeZipEntryPath(string path)
+    {
+        var clean = NormalizeZipName(path).Trim();
+        if (clean.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var parts = new List<string>();
+        foreach (var part in clean.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part == ".")
+            {
+                continue;
+            }
+
+            if (part == "..")
+            {
+                if (parts.Count > 0)
+                {
+                    parts.RemoveAt(parts.Count - 1);
+                }
+
+                continue;
+            }
+
+            parts.Add(part);
+        }
+
+        return string.Join('/', parts);
+    }
+
     private static int ReadBlock(Stream stream, byte[] buffer, CancellationToken token)
     {
         var offset = 0;
@@ -925,5 +1250,21 @@ internal static class FileOperations
 
             _progress.Report(new OperationProgress(Math.Min(_itemsDone, _itemsTotal), _itemsTotal, message));
         }
+    }
+
+    private sealed class ZipListItem
+    {
+        public ZipListItem(string name, string entryPath, bool isDirectory)
+        {
+            Name = name;
+            EntryPath = entryPath;
+            IsDirectory = isDirectory;
+        }
+
+        public string Name { get; }
+        public string EntryPath { get; }
+        public bool IsDirectory { get; set; }
+        public long? Size { get; set; }
+        public DateTime Modified { get; set; }
     }
 }

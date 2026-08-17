@@ -4,7 +4,21 @@ namespace AzertyCommander;
 
 internal sealed class FileSystemEntry
 {
-    public FileSystemEntry(string name, string fullPath, bool isDirectory, bool isParent, long? size, DateTime modified, FileAttributes attributes, bool isRemote = false)
+    private readonly string? _displayName;
+
+    public FileSystemEntry(
+        string name,
+        string fullPath,
+        bool isDirectory,
+        bool isParent,
+        long? size,
+        DateTime modified,
+        FileAttributes attributes,
+        bool isRemote = false,
+        bool isArchiveEntry = false,
+        string archivePath = "",
+        string archiveEntryPath = "",
+        string? displayName = null)
     {
         Name = name;
         FullPath = fullPath;
@@ -14,6 +28,10 @@ internal sealed class FileSystemEntry
         Modified = modified;
         Attributes = attributes;
         IsRemote = isRemote;
+        IsArchiveEntry = isArchiveEntry;
+        ArchivePath = archivePath;
+        ArchiveEntryPath = archiveEntryPath;
+        _displayName = displayName;
     }
 
     public string Name { get; }
@@ -24,9 +42,12 @@ internal sealed class FileSystemEntry
     public long? Size { get; private set; }
     public DateTime Modified { get; }
     public FileAttributes Attributes { get; }
+    public bool IsArchiveEntry { get; }
+    public string ArchivePath { get; }
+    public string ArchiveEntryPath { get; }
 
     public Image SmallIcon => ShellIconProvider.GetSmallIcon(FullPath, IsDirectory, IsParent);
-    public string DisplayName => IsParent ? "[..]" : Name;
+    public string DisplayName => IsParent ? "[..]" : _displayName ?? Name;
     public string TypeText => IsParent ? string.Empty : IsDirectory ? "<Папка>" : GetExtensionText();
     public string SizeText => IsParent || Size is null ? string.Empty : Size.Value.ToString("N0", CultureInfo.CurrentCulture);
     public string DateText => IsParent ? string.Empty : Modified.ToString("dd.MM.yyyy HH:mm", CultureInfo.CurrentCulture);

@@ -121,6 +121,32 @@ internal static class SelfTest
                 return false;
             }
 
+            var archiveRootEntries = FileOperations.ListZipEntries(zipPath, string.Empty);
+            var archiveFolderEntry = archiveRootEntries.FirstOrDefault(entry => entry.Name == "folder" && entry.IsDirectory);
+            if (archiveFolderEntry is null || archiveRootEntries.All(entry => entry.Name != "one.txt"))
+            {
+                Console.Error.WriteLine("ZIP virtual list check failed.");
+                return false;
+            }
+
+            var archiveFolderEntries = FileOperations.ListZipEntries(zipPath, "folder");
+            if (archiveFolderEntries.All(entry => entry.Name != "two.txt") ||
+                archiveFolderEntries.All(entry => entry.IsParent))
+            {
+                Console.Error.WriteLine("ZIP virtual nested list check failed.");
+                return false;
+            }
+
+            var archiveCopy = Path.Combine(root, "archive-copy");
+            var archiveProgress = new RecordedProgress();
+            FileOperations.ExtractArchiveEntriesAsync(new[] { archiveFolderEntry }, archiveCopy, archiveProgress, CancellationToken.None).GetAwaiter().GetResult();
+            if (!File.Exists(Path.Combine(archiveCopy, "folder", "two.txt")) ||
+                !archiveProgress.Items.Any(item => item.BytesTotal >= 5 && item.BytesDone > 0))
+            {
+                Console.Error.WriteLine("ZIP virtual copy extract check failed.");
+                return false;
+            }
+
             var legacyZip = Path.Combine(root, "legacy-cp866.zip");
             var legacyName = "Кулер июль 26_2К.mp4";
             CreateSingleEntryZip(legacyZip, legacyName, Encoding.GetEncoding(866));
@@ -390,6 +416,28 @@ internal static class SelfTest
                 return false;
             }
 
+            panel.LoadSearchResults(new[]
+            {
+                new FileSystemEntry(
+                    "one.txt",
+                    Path.Combine(left, "one.txt"),
+                    false,
+                    false,
+                    5,
+                    DateTime.Now,
+                    FileAttributes.Archive,
+                    displayName: Path.Combine(left, "one.txt"))
+            }, "Self-test");
+            if (!panel.IsSearchMode ||
+                !panel.CommandPathText.StartsWith("[Поиск]", StringComparison.Ordinal) ||
+                panel.FocusedEntry?.DisplayName != Path.Combine(left, "one.txt"))
+            {
+                Console.Error.WriteLine("Search results panel mode check failed.");
+                return false;
+            }
+
+            panel.LoadPath(left);
+
             var markCount = panel.MarkByPattern("*.txt", true);
             if (markCount == 0 || panel.SelectedEntries.Count == 0)
             {
@@ -445,6 +493,44 @@ internal static class SelfTest
                 Console.Error.WriteLine("Insert selection check failed.");
                 return false;
             }
+
+            panel.LoadArchive(zipPath);
+            if (!panel.IsArchiveMode || panel.Entries.All(entry => entry.Name != "folder"))
+            {
+                Console.Error.WriteLine("ZIP panel mode check failed.");
+                return false;
+            }
+
+            if (!panel.SelectPath("folder"))
+            {
+                Console.Error.WriteLine("ZIP panel folder selection check failed.");
+                return false;
+            }
+
+            panel.OpenFocusedEntry();
+            if (!panel.IsArchiveMode ||
+                panel.Entries.All(entry => entry.Name != "two.txt") ||
+                panel.FocusedEntry is not { IsParent: true })
+            {
+                Console.Error.WriteLine("ZIP panel enter check failed.");
+                return false;
+            }
+
+            panel.NavigateUp();
+            if (!panel.IsArchiveMode || panel.FocusedEntry?.Name != "folder")
+            {
+                Console.Error.WriteLine("ZIP panel leave nested check failed.");
+                return false;
+            }
+
+            panel.NavigateUp();
+            if (panel.IsArchiveMode || panel.CurrentPath != root || panel.FocusedEntry?.FullPath != zipPath)
+            {
+                Console.Error.WriteLine("ZIP panel leave archive check failed.");
+                return false;
+            }
+
+            panel.LoadPath(left);
 
             panel.ApplyTheme(new AppThemeSettings
             {
