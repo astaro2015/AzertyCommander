@@ -1,12 +1,16 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Diagnostics;
+using System.Net.Security;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
 
 namespace AzertyCommander;
 
-internal sealed class FtpClientSession : IDisposable
+internal sealed class FtpClientSession : IRemoteFileSession
 {
     private readonly Encoding _encoding = new UTF8Encoding(false);
     private readonly SemaphoreSlim _controlLock = new(1, 1);
@@ -15,6 +19,8 @@ internal sealed class FtpClientSession : IDisposable
     private StreamWriter? _writer;
     private System.Threading.Timer? _keepAliveTimer;
     private DateTime _lastControlActivityUtc = DateTime.MinValue;
+    private FtpConnectionOptions? _options;
+    private bool _tlsEnabled;
 
     public string CurrentDirectory { get; private set; } = "/";
 
@@ -23,6 +29,7 @@ internal sealed class FtpClientSession : IDisposable
     public async Task ConnectAsync(FtpConnectionOptions options, CancellationToken token)
     {
         Disconnect();
+        _options = options;
 
         await _controlLock.WaitAsync(token);
         try
@@ -37,6 +44,22 @@ internal sealed class FtpClientSession : IDisposable
             var welcome = await ReadReplyAsync(token);
             EnsurePositive(welcome, "FTP сервер не принял подключение.");
 
+            if (options.UseTls)
+            {
+                var authReply = await SendCommandAsync("AUTH TLS", token);
+                EnsurePositive(authReply, "FTP сервер не включил TLS.");
+                var sslStream = new SslStream(stream, leaveInnerStreamOpen: false, ValidateServerCertificate);
+                await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                {
+                    TargetHost = options.Host,
+                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                    CertificateRevocationCheckMode = X509RevocationMode.Online
+                }, token);
+                _reader = new StreamReader(sslStream, _encoding, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+                _writer = new StreamWriter(sslStream, _encoding) { NewLine = "\r\n", AutoFlush = true };
+                _tlsEnabled = true;
+            }
+
             var userReply = await SendCommandAsync("USER " + CleanArgument(options.UserName), token);
             if (userReply.Code == 331)
             {
@@ -50,6 +73,11 @@ internal sealed class FtpClientSession : IDisposable
 
             await TryCommandAsync("OPTS UTF8 ON", token);
             EnsurePositive(await SendCommandAsync("TYPE I", token), "FTP сервер не включил двоичный режим.");
+            if (_tlsEnabled)
+            {
+                EnsurePositive(await SendCommandAsync("PBSZ 0", token), "FTP сервер не настроил TLS-защиту данных.");
+                EnsurePositive(await SendCommandAsync("PROT P", token), "FTP сервер не включил шифрование данных.");
+            }
             CurrentDirectory = await GetWorkingDirectoryAsync(token);
             StartKeepAlive();
         }
@@ -83,11 +111,13 @@ internal sealed class FtpClientSession : IDisposable
         _reader = null;
         _writer = null;
         _client = null;
+        _tlsEnabled = false;
         CurrentDirectory = "/";
     }
 
     public async Task<IReadOnlyList<FtpRemoteEntry>> ListAsync(CancellationToken token)
     {
+        await EnsureConnectedAsync(token);
         await _controlLock.WaitAsync(token);
         try
         {
@@ -101,6 +131,7 @@ internal sealed class FtpClientSession : IDisposable
 
     public async Task<IReadOnlyList<FtpRemoteEntry>> ListAsync(string remoteDirectory, CancellationToken token)
     {
+        await EnsureConnectedAsync(token);
         await _controlLock.WaitAsync(token);
         try
         {
@@ -129,6 +160,7 @@ internal sealed class FtpClientSession : IDisposable
 
     public async Task ChangeDirectoryAsync(string path, CancellationToken token)
     {
+        await EnsureConnectedAsync(token);
         await _controlLock.WaitAsync(token);
         try
         {
@@ -144,6 +176,7 @@ internal sealed class FtpClientSession : IDisposable
 
     public async Task CreateDirectoryAsync(string path, CancellationToken token)
     {
+        await EnsureConnectedAsync(token);
         await _controlLock.WaitAsync(token);
         try
         {
@@ -158,6 +191,7 @@ internal sealed class FtpClientSession : IDisposable
 
     public async Task DeleteFileAsync(string path, CancellationToken token)
     {
+        await EnsureConnectedAsync(token);
         await _controlLock.WaitAsync(token);
         try
         {
@@ -172,6 +206,7 @@ internal sealed class FtpClientSession : IDisposable
 
     public async Task RemoveDirectoryAsync(string path, CancellationToken token)
     {
+        await EnsureConnectedAsync(token);
         await _controlLock.WaitAsync(token);
         try
         {
@@ -186,6 +221,7 @@ internal sealed class FtpClientSession : IDisposable
 
     public async Task RenameAsync(string oldPath, string newPath, CancellationToken token)
     {
+        await EnsureConnectedAsync(token);
         await _controlLock.WaitAsync(token);
         try
         {
@@ -200,18 +236,36 @@ internal sealed class FtpClientSession : IDisposable
         }
     }
 
-    public async Task DownloadFileAsync(string remotePath, string localPath, IProgress<string>? progress, CancellationToken token)
+    public async Task DownloadFileAsync(string remotePath, string localPath, IProgress<RemoteTransferProgress>? progress, CancellationToken token)
     {
+        await EnsureConnectedAsync(token);
         await _controlLock.WaitAsync(token);
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(localPath) ?? ".");
-            using var file = File.Create(localPath);
+            var normalizedPath = NormalizeRemotePath(remotePath);
+            var remoteSize = await TryGetRemoteSizeAsync(normalizedPath, token);
+            var offset = _options?.ResumeTransfers == true && File.Exists(localPath)
+                ? Math.Min(new FileInfo(localPath).Length, remoteSize ?? 0)
+                : 0L;
+            using var file = new FileStream(localPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None, 1024 * 128, FileOptions.SequentialScan);
+            if (offset == 0) file.SetLength(0);
+            file.Position = offset;
+            if (offset > 0)
+            {
+                var rest = await SendCommandAsync("REST " + offset.ToString(CultureInfo.InvariantCulture), token);
+                if (!rest.IsPositive)
+                {
+                    offset = 0;
+                    file.SetLength(0);
+                    file.Position = 0;
+                }
+            }
             await ExecuteDataStreamCommandAsync(
-                "RETR " + NormalizeRemotePath(remotePath),
+                "RETR " + normalizedPath,
                 async stream =>
                 {
-                    await CopyStreamAsync(stream, file, progress, Path.GetFileName(localPath), token);
+                    await CopyStreamAsync(stream, file, progress, Path.GetFileName(localPath), offset, remoteSize, token);
                 },
                 token);
         }
@@ -221,17 +275,28 @@ internal sealed class FtpClientSession : IDisposable
         }
     }
 
-    public async Task UploadFileAsync(string localPath, string remotePath, IProgress<string>? progress, CancellationToken token)
+    public async Task UploadFileAsync(string localPath, string remotePath, IProgress<RemoteTransferProgress>? progress, CancellationToken token)
     {
+        await EnsureConnectedAsync(token);
         await _controlLock.WaitAsync(token);
         try
         {
+            var normalizedPath = NormalizeRemotePath(remotePath);
+            var localSize = new FileInfo(localPath).Length;
+            var offset = _options?.ResumeTransfers == true
+                ? Math.Min(await TryGetRemoteSizeAsync(normalizedPath, token) ?? 0, localSize)
+                : 0L;
             using var file = File.OpenRead(localPath);
+            if (offset > 0)
+            {
+                var rest = await SendCommandAsync("REST " + offset.ToString(CultureInfo.InvariantCulture), token);
+                if (rest.IsPositive) file.Position = offset; else offset = 0;
+            }
             await ExecuteDataStreamCommandAsync(
-                "STOR " + NormalizeRemotePath(remotePath),
+                "STOR " + normalizedPath,
                 async stream =>
                 {
-                    await CopyStreamAsync(file, stream, progress, Path.GetFileName(localPath), token);
+                    await CopyStreamAsync(file, stream, progress, Path.GetFileName(localPath), offset, localSize, token);
                 },
                 token);
         }
@@ -277,7 +342,13 @@ internal sealed class FtpClientSession : IDisposable
         {
             if (_writer is not null && Connected)
             {
-                await TryCommandAsync("NOOP", CancellationToken.None);
+                var reply = await TryCommandAsync("NOOP", CancellationToken.None);
+                if (reply is null)
+                {
+                    var directory = CurrentDirectory;
+                    Disconnect();
+                    CurrentDirectory = directory;
+                }
             }
         }
         finally
@@ -300,6 +371,23 @@ internal sealed class FtpClientSession : IDisposable
 
         var match = Regex.Match(reply.Message, "\"(?<path>[^\"]+)\"");
         return match.Success ? NormalizeRemotePath(match.Groups["path"].Value) : "/";
+    }
+
+    private async Task<long?> TryGetRemoteSizeAsync(string path, CancellationToken token)
+    {
+        var reply = await TryCommandAsync("SIZE " + path, token);
+        if (reply is null || !reply.IsPositive) return null;
+        var text = reply.Message.Length > 4 ? reply.Message[4..].Trim() : string.Empty;
+        return long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var size) ? size : null;
+    }
+
+    private async Task EnsureConnectedAsync(CancellationToken token)
+    {
+        if (Connected) return;
+        if (_options?.AutoReconnect != true) throw new IOException("FTP соединение разорвано.");
+        var desiredDirectory = CurrentDirectory;
+        await ConnectAsync(_options, token);
+        if (desiredDirectory != "/") await ChangeDirectoryAsync(desiredDirectory, token);
     }
 
     private async Task<string> ExecuteDataReadCommandAsync(string command, CancellationToken token)
@@ -325,7 +413,20 @@ internal sealed class FtpClientSession : IDisposable
             throw new InvalidOperationException(startReply.Message);
         }
 
-        using (var dataStream = dataClient.GetStream())
+        Stream dataStream = dataClient.GetStream();
+        if (_tlsEnabled && _options is not null)
+        {
+            var sslStream = new SslStream(dataStream, leaveInnerStreamOpen: false, ValidateServerCertificate);
+            await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            {
+                TargetHost = _options.Host,
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                CertificateRevocationCheckMode = X509RevocationMode.Online
+            }, token);
+            dataStream = sslStream;
+        }
+
+        using (dataStream)
         {
             await transfer(dataStream);
         }
@@ -380,6 +481,11 @@ internal sealed class FtpClientSession : IDisposable
         var reply = await ReadReplyAsync(token);
         _lastControlActivityUtc = DateTime.UtcNow;
         return reply;
+    }
+
+    private bool ValidateServerCertificate(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors errors)
+    {
+        return _options?.AcceptAnyCertificate == true || errors == SslPolicyErrors.None;
     }
 
     private async Task<FtpReply?> TryCommandAsync(string command, CancellationToken token)
@@ -673,16 +779,33 @@ internal sealed class FtpClientSession : IDisposable
         return (value ?? string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty);
     }
 
-    private static async Task CopyStreamAsync(Stream source, Stream destination, IProgress<string>? progress, string label, CancellationToken token)
+    private async Task CopyStreamAsync(
+        Stream source,
+        Stream destination,
+        IProgress<RemoteTransferProgress>? progress,
+        string label,
+        long initialBytes,
+        long? totalBytes,
+        CancellationToken token)
     {
         var buffer = new byte[1024 * 128];
-        long copied = 0;
+        var copied = initialBytes;
+        var transferredThisRun = 0L;
+        var stopwatch = Stopwatch.StartNew();
         int read;
         while ((read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), token)) > 0)
         {
             await destination.WriteAsync(buffer.AsMemory(0, read), token);
             copied += read;
-            progress?.Report($"{label}: {copied / 1024:N0} Кб");
+            transferredThisRun += read;
+            progress?.Report(new RemoteTransferProgress(copied, totalBytes, label));
+            var limit = _options?.SpeedLimitKbps ?? 0;
+            if (limit > 0)
+            {
+                var expected = TimeSpan.FromSeconds(transferredThisRun / (limit * 1024D));
+                var delay = expected - stopwatch.Elapsed;
+                if (delay > TimeSpan.FromMilliseconds(2)) await Task.Delay(delay, token);
+            }
         }
     }
 }

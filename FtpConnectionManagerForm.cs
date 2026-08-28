@@ -210,7 +210,7 @@ internal sealed class FtpConnectionManagerForm : Form
             SelectedImageKey = "ftp"
         };
 
-        node.ToolTipText = $"{profile.Host}:{profile.Port}";
+        node.ToolTipText = $"{profile.Protocol}: {profile.Host}:{profile.Port}";
         return node;
     }
 
@@ -382,8 +382,8 @@ internal sealed class FtpConnectionManagerForm : Form
     {
         MessageBox.Show(
             this,
-            "Добавьте соединение, укажите сервер и нажмите \"Соединиться\". \"Новый URL\" понимает адреса вида ftp://user:pass@host:2121/path. Встроенный клиент работает с обычным FTP без TLS.",
-            "FTP справка",
+            "Добавьте соединение, выберите FTP, FTPS или SFTP и нажмите «Соединиться». «Новый URL» понимает ftp://, ftps:// и sftp://user:pass@host:22/path. После подключения удалённая папка открывается прямо в выбранной панели.",
+            "Справка по соединениям",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
     }
@@ -511,6 +511,7 @@ internal sealed class FtpConnectionManagerForm : Form
         }
 
         profile.PassiveMode = true;
+        profile.SpeedLimitKbps = Math.Max(0, profile.SpeedLimitKbps);
         return profile;
     }
 
@@ -519,9 +520,12 @@ internal sealed class FtpConnectionManagerForm : Form
         profile = FtpConnectionProfile.CreateDefault();
         error = string.Empty;
 
-        if (!Uri.TryCreate(text.Trim(), UriKind.Absolute, out var uri) || !string.Equals(uri.Scheme, Uri.UriSchemeFtp, StringComparison.OrdinalIgnoreCase))
+        if (!Uri.TryCreate(text.Trim(), UriKind.Absolute, out var uri) ||
+            !(uri.Scheme.Equals("ftp", StringComparison.OrdinalIgnoreCase) ||
+              uri.Scheme.Equals("ftps", StringComparison.OrdinalIgnoreCase) ||
+              uri.Scheme.Equals("sftp", StringComparison.OrdinalIgnoreCase)))
         {
-            error = "Укажите FTP URL вида ftp://host:21/path.";
+            error = "Укажите URL вида ftp://host:21/path, ftps://host/path или sftp://host:22/path.";
             return false;
         }
 
@@ -533,7 +537,12 @@ internal sealed class FtpConnectionManagerForm : Form
 
         profile.Name = uri.Host;
         profile.Host = uri.Host;
-        profile.Port = uri.IsDefaultPort ? 21 : uri.Port;
+        profile.Protocol = uri.Scheme.Equals("sftp", StringComparison.OrdinalIgnoreCase)
+            ? RemoteConnectionProtocol.Sftp
+            : uri.Scheme.Equals("ftps", StringComparison.OrdinalIgnoreCase)
+                ? RemoteConnectionProtocol.FtpsExplicit
+                : RemoteConnectionProtocol.Ftp;
+        profile.Port = uri.IsDefaultPort ? profile.Protocol == RemoteConnectionProtocol.Sftp ? 22 : 21 : uri.Port;
         profile.RemoteDirectory = string.IsNullOrWhiteSpace(uri.AbsolutePath) || uri.AbsolutePath == "/" ? string.Empty : Uri.UnescapeDataString(uri.AbsolutePath);
 
         if (!string.IsNullOrWhiteSpace(uri.UserInfo))

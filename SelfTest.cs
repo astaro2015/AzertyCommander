@@ -40,6 +40,38 @@ internal static class SelfTest
                 return false;
             }
 
+            var hash = FileHashService.ComputeAsync(Path.Combine(left, "one.txt"), null, CancellationToken.None).GetAwaiter().GetResult();
+            if (hash.Crc32 != "3610A686" ||
+                hash.Md5 != "5D41402ABC4B2A76B9719D911017C592" ||
+                hash.Sha256 != "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824")
+            {
+                Console.Error.WriteLine("Hash calculation check failed.");
+                return false;
+            }
+
+            File.WriteAllText(Path.Combine(right, "one.txt"), "target");
+            var conflicts = FileOperations.FindConflictsAsync([entries[0]], right, null, CancellationToken.None).GetAwaiter().GetResult();
+            if (conflicts.Count != 1)
+            {
+                Console.Error.WriteLine("Conflict scan check failed.");
+                return false;
+            }
+            FileOperations.CopyAsync([entries[0]], right, progress, CancellationToken.None,
+                new FileConflictPlan([(conflicts[0].DestinationPath, FileConflictAction.Skip)])).GetAwaiter().GetResult();
+            if (File.ReadAllText(Path.Combine(right, "one.txt")) != "target")
+            {
+                Console.Error.WriteLine("Conflict skip check failed.");
+                return false;
+            }
+            FileOperations.CopyAsync([entries[0]], right, progress, CancellationToken.None,
+                new FileConflictPlan([(conflicts[0].DestinationPath, FileConflictAction.KeepBoth)])).GetAwaiter().GetResult();
+            if (!File.Exists(Path.Combine(right, "one - копия.txt")))
+            {
+                Console.Error.WriteLine("Conflict keep-both check failed.");
+                return false;
+            }
+            File.WriteAllText(Path.Combine(right, "one.txt"), "hello");
+
             var sameCompare = FileOperations.CompareFilesByBytesAsync(
                 Path.Combine(left, "one.txt"),
                 Path.Combine(right, "one.txt"),
@@ -89,6 +121,137 @@ internal static class SelfTest
                 // Expected: a folder cannot be copied into itself.
             }
 
+            var renameRoot = Path.Combine(root, "rename");
+            Directory.CreateDirectory(renameRoot);
+            var alphaPath = Path.Combine(renameRoot, "alpha.txt");
+            var betaPath = Path.Combine(renameRoot, "beta.txt");
+            File.WriteAllText(alphaPath, "a");
+            File.WriteAllText(betaPath, "b");
+            var renameEntries = new[]
+            {
+                CreateEntry(alphaPath),
+                CreateEntry(betaPath)
+            };
+            var renameOptions = new BatchRenameOptions("[N]_[C]", "a", "x", "pre-", "", BatchRenameCaseMode.Unchanged, 1, 2);
+            var renamePlans = BatchRenameEngine.BuildPlans(renameEntries, renameOptions);
+            if (renamePlans.Any(plan => !plan.IsValid) || renamePlans.Count(plan => plan.HasChange) != 2)
+            {
+                Console.Error.WriteLine("Batch rename preview check failed.");
+                return false;
+            }
+
+            BatchRenameEngine.ApplyAsync(renamePlans, progress, CancellationToken.None).GetAwaiter().GetResult();
+            if (!File.Exists(Path.Combine(renameRoot, "pre-xlphx_01.txt")) ||
+                !File.Exists(Path.Combine(renameRoot, "pre-betx_02.txt")))
+            {
+                Console.Error.WriteLine("Batch rename apply check failed.");
+                return false;
+            }
+
+            var renameHistory = BatchRenameStore.LoadHistory();
+            if (renameHistory is null || renameHistory.Entries.Count != 2)
+            {
+                Console.Error.WriteLine("Batch rename history check failed.");
+                return false;
+            }
+            BatchRenameEngine.UndoAsync(renameHistory.Entries, progress, CancellationToken.None).GetAwaiter().GetResult();
+            if (!File.Exists(alphaPath) || !File.Exists(betaPath))
+            {
+                Console.Error.WriteLine("Batch rename undo check failed.");
+                return false;
+            }
+            BatchRenameStore.ClearHistory();
+
+            var regexPlans = BatchRenameEngine.BuildPlans(renameEntries, new BatchRenameOptions(
+                "[N]", "^(a|b)", "item-", "", "", BatchRenameCaseMode.Unchanged, 1, 2, UseRegex: true));
+            if (regexPlans.Any(plan => !plan.NewName.StartsWith("item-", StringComparison.Ordinal)))
+            {
+                Console.Error.WriteLine("Batch rename regular expression check failed.");
+                return false;
+            }
+
+            var duplicatePlans = BatchRenameEngine.BuildPlans(renameEntries, renameOptions with
+            {
+                NameMask = "same",
+                SearchText = string.Empty,
+                Prefix = string.Empty
+            });
+            if (duplicatePlans.All(plan => plan.IsValid))
+            {
+                Console.Error.WriteLine("Batch rename duplicate guard check failed.");
+                return false;
+            }
+
+            var compareLeft = Path.Combine(root, "compare-left");
+            var compareRight = Path.Combine(root, "compare-right");
+            Directory.CreateDirectory(Path.Combine(compareLeft, "nested"));
+            Directory.CreateDirectory(compareRight);
+            File.WriteAllText(Path.Combine(compareLeft, "common.txt"), "left");
+            File.WriteAllText(Path.Combine(compareRight, "common.txt"), "right");
+            File.WriteAllText(Path.Combine(compareLeft, "only-left.txt"), "left only");
+            File.WriteAllText(Path.Combine(compareRight, "only-right.txt"), "right only");
+            File.WriteAllText(Path.Combine(compareLeft, "nested", "child.txt"), "nested");
+            var comparison = DirectoryComparisonService.CompareAsync(
+                compareLeft,
+                compareRight,
+                compareContents: true,
+                progress,
+                CancellationToken.None).GetAwaiter().GetResult();
+            if (!comparison.Any(item => item.RelativePath == "common.txt" && item.Kind == DirectoryComparisonKind.Different) ||
+                !comparison.Any(item => item.RelativePath == "only-left.txt" && item.Kind == DirectoryComparisonKind.OnlyLeft) ||
+                !comparison.Any(item => item.RelativePath == "only-right.txt" && item.Kind == DirectoryComparisonKind.OnlyRight))
+            {
+                Console.Error.WriteLine("Directory comparison check failed.");
+                return false;
+            }
+
+            var syncItems = comparison
+                .Where(item => item.Kind is DirectoryComparisonKind.OnlyLeft or DirectoryComparisonKind.Different)
+                .ToList();
+            DirectoryComparisonService.CopyAsync(
+                new DirectorySyncRequest(compareLeft, compareRight, DirectorySyncDirection.LeftToRight, syncItems),
+                progress,
+                CancellationToken.None).GetAwaiter().GetResult();
+            if (File.ReadAllText(Path.Combine(compareRight, "common.txt")) != "left" ||
+                !File.Exists(Path.Combine(compareRight, "only-left.txt")) ||
+                !File.Exists(Path.Combine(compareRight, "nested", "child.txt")))
+            {
+                Console.Error.WriteLine("Directory synchronization check failed.");
+                return false;
+            }
+
+            DirectoryComparisonService.CopyAsync(
+                new DirectorySyncRequest(compareLeft, compareRight, DirectorySyncDirection.LeftToRight, comparison, Mirror: true),
+                progress,
+                CancellationToken.None).GetAwaiter().GetResult();
+            if (File.Exists(Path.Combine(compareRight, "only-right.txt")))
+            {
+                Console.Error.WriteLine("Directory mirror check failed.");
+                return false;
+            }
+
+            using (var operationQueue = new OperationQueueManager())
+            {
+                var queued = operationQueue.Enqueue(
+                    "Self-test",
+                    "Queue",
+                    (queueProgress, token) => Task.Run(() => queueProgress.Report(new OperationProgress(1, 1, "OK", 4, 4)), token));
+                operationQueue.WaitForIdleAsync().GetAwaiter().GetResult();
+                if (queued.Status != QueuedOperationStatus.Completed || queued.ProgressText != "100%")
+                {
+                    Console.Error.WriteLine("Operation queue check failed.");
+                    return false;
+                }
+
+                var failed = operationQueue.Enqueue("Retry", "Queue", (_, _) => Task.FromException(new IOException("planned")));
+                operationQueue.WaitForIdleAsync().GetAwaiter().GetResult();
+                if (failed.Status != QueuedOperationStatus.Failed)
+                {
+                    Console.Error.WriteLine("Operation queue failure check failed.");
+                    return false;
+                }
+            }
+
             var zipPath = Path.Combine(root, "packed.zip");
             var zipProgress = new RecordedProgress();
             FileOperations.CreateZipAsync(entries, zipPath, zipProgress, CancellationToken.None).GetAwaiter().GetResult();
@@ -134,6 +297,29 @@ internal static class SelfTest
                 archiveFolderEntries.All(entry => entry.IsParent))
             {
                 Console.Error.WriteLine("ZIP virtual nested list check failed.");
+                return false;
+            }
+
+            var addToZipPath = Path.Combine(root, "added.txt");
+            File.WriteAllText(addToZipPath, "added");
+            FileOperations.AddEntriesToZipAsync(zipPath, "folder", [CreateEntry(addToZipPath)], progress, CancellationToken.None).GetAwaiter().GetResult();
+            var addedEntry = FileOperations.ListArchiveEntries(zipPath, "folder").FirstOrDefault(entry => entry.Name == "added.txt");
+            if (addedEntry is null)
+            {
+                Console.Error.WriteLine("ZIP add check failed.");
+                return false;
+            }
+            FileOperations.RenameZipEntryAsync(addedEntry, "renamed.txt", progress, CancellationToken.None).GetAwaiter().GetResult();
+            var renamedEntry = FileOperations.ListArchiveEntries(zipPath, "folder").FirstOrDefault(entry => entry.Name == "renamed.txt");
+            if (renamedEntry is null)
+            {
+                Console.Error.WriteLine("ZIP rename check failed.");
+                return false;
+            }
+            FileOperations.DeleteZipEntriesAsync([renamedEntry], progress, CancellationToken.None).GetAwaiter().GetResult();
+            if (FileOperations.ListArchiveEntries(zipPath, "folder").Any(entry => entry.Name == "renamed.txt"))
+            {
+                Console.Error.WriteLine("ZIP delete check failed.");
                 return false;
             }
 
@@ -340,7 +526,11 @@ internal static class SelfTest
                 Port = 2121,
                 Anonymous = true,
                 LocalDirectory = left,
-                Group = "LAN"
+                Group = "LAN",
+                Protocol = RemoteConnectionProtocol.Sftp,
+                ResumeTransfers = true,
+                AutoReconnect = true,
+                SpeedLimitKbps = 512
             };
             using var ftpConnections = new FtpConnectionManagerForm(new[] { ftpProfile }, new[] { "LAN" }, left);
             if (ftpConnections.Text != "Соединение с FTP-сервером" || ftpConnections.Profiles.Count != 1)
@@ -350,7 +540,7 @@ internal static class SelfTest
             }
 
             using var ftpEditor = new FtpConnectionEditorForm(ftpProfile, ftpConnections.Groups, left);
-            if (ftpEditor.Text != "Настройка FTP-соединения")
+            if (ftpEditor.Text != "Настройка удалённого соединения")
             {
                 Console.Error.WriteLine("FTP editor check failed.");
                 return false;
@@ -364,9 +554,43 @@ internal static class SelfTest
             }
 
             using var searchForm = new SearchForm(left);
-            if (searchForm.Text != "Поиск файлов" || searchForm.ClientSize.Width < 980)
+            if (searchForm.Text != "Поиск файлов" ||
+                searchForm.ClientSize.Width < 980 ||
+                searchForm.AutoScaleMode != AutoScaleMode.Dpi ||
+                searchForm.MinimumSize.Height < 700)
             {
                 Console.Error.WriteLine("Search form check failed.");
+                return false;
+            }
+
+            using var batchRenameForm = new BatchRenameForm(new[] { entries[0] });
+            if (batchRenameForm.Text != "Групповое переименование" || batchRenameForm.MinimumSize.Height < 600)
+            {
+                Console.Error.WriteLine("Batch rename form check failed.");
+                return false;
+            }
+
+            using var directoryCompareForm = new DirectoryCompareForm(left, right);
+            if (directoryCompareForm.Text != "Сравнение и синхронизация каталогов" || directoryCompareForm.MinimumSize.Width < 900)
+            {
+                Console.Error.WriteLine("Directory compare form check failed.");
+                return false;
+            }
+
+            using var hashesForm = new HashesForm([Path.Combine(left, "one.txt")]);
+            using var duplicateFinderForm = new DuplicateFinderForm(left);
+            using var propertiesForm = new FilePropertiesForm(Path.Combine(left, "one.txt"));
+            if (hashesForm.Text != "Контрольные суммы" || duplicateFinderForm.Text != "Поиск одинаковых файлов" || !propertiesForm.Text.StartsWith("Свойства:", StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine("File tools forms check failed.");
+                return false;
+            }
+
+            using var queueForForm = new OperationQueueManager();
+            using var queueForm = new OperationQueueForm(queueForForm);
+            if (queueForm.Text != "Очередь операций" || queueForm.MinimumSize.Width < 800)
+            {
+                Console.Error.WriteLine("Operation queue form check failed.");
                 return false;
             }
 
@@ -649,6 +873,18 @@ internal static class SelfTest
         var entry = archive.CreateEntry(entryName);
         using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
         writer.Write("zip");
+    }
+
+    private static FileSystemEntry CreateEntry(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            var directory = new DirectoryInfo(path);
+            return new FileSystemEntry(directory.Name, directory.FullName, true, false, null, directory.LastWriteTime, directory.Attributes);
+        }
+
+        var file = new FileInfo(path);
+        return new FileSystemEntry(file.Name, file.FullName, false, false, file.Length, file.LastWriteTime, file.Attributes);
     }
 
     private static IEnumerable<Control> DescendantControls(Control root)

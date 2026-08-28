@@ -1,5 +1,12 @@
 namespace AzertyCommander;
 
+internal enum RemoteConnectionProtocol
+{
+    Ftp,
+    FtpsExplicit,
+    Sftp
+}
+
 internal sealed class FtpConnectionProfile
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -13,6 +20,11 @@ internal sealed class FtpConnectionProfile
     public string RemoteDirectory { get; set; } = string.Empty;
     public string LocalDirectory { get; set; } = string.Empty;
     public bool PassiveMode { get; set; } = true;
+    public RemoteConnectionProtocol Protocol { get; set; }
+    public bool ResumeTransfers { get; set; } = true;
+    public bool AutoReconnect { get; set; } = true;
+    public int SpeedLimitKbps { get; set; }
+    public bool AcceptAnyCertificate { get; set; }
 
     public FtpConnectionProfile Clone()
     {
@@ -28,7 +40,12 @@ internal sealed class FtpConnectionProfile
             Password = Password,
             RemoteDirectory = RemoteDirectory,
             LocalDirectory = LocalDirectory,
-            PassiveMode = PassiveMode
+            PassiveMode = PassiveMode,
+            Protocol = Protocol,
+            ResumeTransfers = ResumeTransfers,
+            AutoReconnect = AutoReconnect,
+            SpeedLimitKbps = SpeedLimitKbps,
+            AcceptAnyCertificate = AcceptAnyCertificate
         };
     }
 
@@ -44,6 +61,9 @@ internal sealed class FtpConnectionProfile
             Password = "guest@",
             LocalDirectory = localDirectory,
             PassiveMode = true
+            ,Protocol = RemoteConnectionProtocol.Ftp
+            ,ResumeTransfers = true
+            ,AutoReconnect = true
         };
     }
 }

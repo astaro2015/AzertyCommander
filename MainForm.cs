@@ -10,10 +10,13 @@ internal sealed class MainForm : Form
     private readonly TextBox _commandBox = new();
     private readonly SplitContainer _splitContainer = new();
     private readonly ToolStrip _quickLaunchToolbar = new();
-    private readonly Dictionary<FilePanel, FtpClientSession> _ftpSessions = new();
+    private readonly Dictionary<FilePanel, IRemoteFileSession> _ftpSessions = new();
     private readonly Dictionary<FilePanel, FtpConnectionProfile> _ftpProfiles = new();
     private readonly List<QuickLaunchEntry> _quickLaunchEntries = QuickLaunchStore.Load();
+    private readonly OperationQueueManager _operationQueue = new();
     private ContextMenuStrip? _favoriteDirectoriesMenu;
+    private OperationQueueForm? _operationQueueForm;
+    private DirectoryCompareForm? _directoryCompareForm;
     private FilePanel _activePanel;
     private bool _centeringSplitter;
     private bool _splitterMovedByUser;
@@ -134,8 +137,22 @@ internal sealed class MainForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        if (_operationQueue.HasActiveOperations && e.CloseReason == CloseReason.UserClosing &&
+            MessageBox.Show(
+                this,
+                "В очереди ещё есть операции. Отменить их и выйти?",
+                "Очередь операций",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) != DialogResult.Yes)
+        {
+            e.Cancel = true;
+            return;
+        }
+
         SaveCurrentSettings();
         DisposeFtpSessions();
+        _operationQueue.Dispose();
+        _operationQueueForm?.ClosePermanently();
         base.OnFormClosing(e);
     }
 
@@ -152,11 +169,14 @@ internal sealed class MainForm : Form
         var files = new ToolStripMenuItem("Файлы");
         files.DropDownItems.Add(CreateMenuItem("Просмотр\tF3", (_, _) => ViewText()));
         files.DropDownItems.Add(CreateMenuItem("Переименовать\tF2", (_, _) => RenameSelected()));
+        files.DropDownItems.Add(CreateMenuItem("Групповое переименование...\tCtrl+M", (_, _) => ShowBatchRename()));
+        files.DropDownItems.Add(CreateMenuItem("Отменить последнее групповое переименование", async (_, _) => await UndoBatchRenameAsync()));
         files.DropDownItems.Add(new ToolStripSeparator());
         files.DropDownItems.Add(CreateMenuItem("Копировать\tF5", async (_, _) => await CopySelectedAsync()));
         files.DropDownItems.Add(CreateMenuItem("Переместить\tF6", async (_, _) => await MoveSelectedAsync()));
         files.DropDownItems.Add(CreateMenuItem("Удалить\tF8/Del", (_, _) => DeleteSelected(false)));
         files.DropDownItems.Add(CreateMenuItem("Удалить безвозвратно\tShift+Del", (_, _) => DeleteSelected(true)));
+        files.DropDownItems.Add(CreateMenuItem("Свойства...\tAlt+Enter", (_, _) => ShowProperties()));
         files.DropDownItems.Add(new ToolStripSeparator());
         files.DropDownItems.Add(CreateMenuItem("Копировать в буфер\tCtrl+C", (_, _) => CopySelectionToClipboard(false)));
         files.DropDownItems.Add(CreateMenuItem("Вырезать в буфер\tCtrl+X", (_, _) => CopySelectionToClipboard(true)));
@@ -176,6 +196,10 @@ internal sealed class MainForm : Form
         commands.DropDownItems.Add(new ToolStripSeparator());
         commands.DropDownItems.Add(CreateMenuItem("Поиск\tCtrl+F", (_, _) => ShowSearch()));
         commands.DropDownItems.Add(CreateMenuItem("Сравнить файлы побайтово", async (_, _) => await CompareSelectedFilesAsync()));
+        commands.DropDownItems.Add(CreateMenuItem("Сравнить каталоги...", (_, _) => ShowDirectoryComparison()));
+        commands.DropDownItems.Add(CreateMenuItem("Контрольные суммы...", (_, _) => ShowHashes()));
+        commands.DropDownItems.Add(CreateMenuItem("Найти одинаковые файлы...", (_, _) => ShowDuplicateFinder()));
+        commands.DropDownItems.Add(CreateMenuItem("Очередь операций...", (_, _) => ShowOperationQueue()));
         commands.DropDownItems.Add(new ToolStripSeparator());
         commands.DropDownItems.Add(CreateMenuItem("Упаковать ZIP", async (_, _) => await CreateZipAsync()));
         commands.DropDownItems.Add(CreateMenuItem("Распаковать ZIP", async (_, _) => await ExtractZipAsync()));
@@ -412,6 +436,12 @@ internal sealed class MainForm : Form
                 return true;
             case Keys.Control | Keys.F:
                 ShowSearch();
+                return true;
+            case Keys.Control | Keys.M:
+                ShowBatchRename();
+                return true;
+            case Keys.Alt | Keys.Enter:
+                ShowProperties();
                 return true;
             case Keys.Control | Keys.R:
                 RefreshPanels();
@@ -823,7 +853,7 @@ internal sealed class MainForm : Form
 
         if (PassivePanel.IsArchiveMode)
         {
-            MessageBox.Show(this, "Копирование внутрь ZIP пока не поддержано. Из ZIP в обычную панель работает через F5.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            await AddSelectionToArchiveAsync();
             return;
         }
 
@@ -839,20 +869,25 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (!ConfirmConflicts(entries, PassivePanel.CurrentPath, "Копирование"))
+        var conflictPlan = await ResolveConflictsAsync(entries, PassivePanel.CurrentPath, "Копирование");
+        if (conflictPlan is null)
         {
             return;
         }
 
-        await RunOperationAsync("Копирование", token => FileOperations.CopyAsync(entries, PassivePanel.CurrentPath, token.Progress, token.CancellationToken));
-        RefreshPanels();
+        var targetDirectory = PassivePanel.CurrentPath;
+        QueueOperation(
+            "Копирование",
+            $"{entries.Count} элемент(ов) -> {targetDirectory}",
+            (progress, token) => FileOperations.CopyAsync(entries, targetDirectory, progress, token, conflictPlan),
+            RefreshPanels);
     }
 
     private async Task MoveSelectedAsync()
     {
         if (_activePanel.IsArchiveMode || PassivePanel.IsArchiveMode)
         {
-            MessageBox.Show(this, "Из ZIP можно распаковать копированием F5. Перемещение для архива пока не делаю.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Для архивов F5 копирует внутрь ZIP или распаковывает наружу. F6 не удаляет исходник.", "Архив", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -868,24 +903,29 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (!ConfirmConflicts(entries, PassivePanel.CurrentPath, "Перемещение"))
+        var conflictPlan = await ResolveConflictsAsync(entries, PassivePanel.CurrentPath, "Перемещение");
+        if (conflictPlan is null)
         {
             return;
         }
 
-        await RunOperationAsync("Перемещение", token => FileOperations.MoveAsync(entries, PassivePanel.CurrentPath, token.Progress, token.CancellationToken));
-        RefreshPanels();
+        var targetDirectory = PassivePanel.CurrentPath;
+        QueueOperation(
+            "Перемещение",
+            $"{entries.Count} элемент(ов) -> {targetDirectory}",
+            (progress, token) => FileOperations.MoveAsync(entries, targetDirectory, progress, token, conflictPlan),
+            RefreshPanels);
     }
 
     private async Task ExtractArchiveSelectionAsync()
     {
         if (PassivePanel.IsFtpMode || PassivePanel.IsArchiveMode)
         {
-            MessageBox.Show(this, "Распаковка из ZIP сейчас работает в соседнюю обычную локальную панель.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Распаковка из архива работает в соседнюю обычную локальную панель.", "Архив", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        var entries = GetSelectedEntries("Распаковка ZIP");
+        var entries = GetSelectedEntries("Распаковка архива");
         if (entries is null)
         {
             return;
@@ -894,17 +934,105 @@ internal sealed class MainForm : Form
         var targetDirectory = PassivePanel.SettingsPath;
         if (!Directory.Exists(targetDirectory))
         {
-            MessageBox.Show(this, "Соседняя локальная папка не найдена.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "Соседняя локальная папка не найдена.", "Архив", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
-        if (!ConfirmConflicts(entries, targetDirectory, "Распаковка ZIP"))
+        if (!ConfirmConflicts(entries, targetDirectory, "Распаковка архива"))
         {
             return;
         }
 
-        await RunOperationAsync("Распаковка ZIP", token => FileOperations.ExtractArchiveEntriesAsync(entries, targetDirectory, token.Progress, token.CancellationToken));
-        RefreshPanels();
+        QueueOperation(
+            "Распаковка архива",
+            $"{entries.Count} элемент(ов) -> {targetDirectory}",
+            (progress, token) => FileOperations.ExtractArchiveEntriesAsync(entries, targetDirectory, progress, token),
+            RefreshPanels);
+        await Task.CompletedTask;
+    }
+
+    private async Task AddSelectionToArchiveAsync()
+    {
+        var entries = GetSelectedEntries("Добавление в ZIP");
+        if (entries is null)
+        {
+            return;
+        }
+
+        await AddEntriesToArchiveAsync(PassivePanel, entries);
+    }
+
+    private async Task AddEntriesToArchiveAsync(FilePanel archivePanel, IReadOnlyList<FileSystemEntry> entries)
+    {
+        if (!archivePanel.IsArchiveMode || !FileOperations.IsEditableArchive(archivePanel.ArchivePath))
+        {
+            MessageBox.Show(this, "Добавление, удаление и переименование поддерживаются только внутри ZIP. 7z и RAR доступны для просмотра и распаковки.", "Архив", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var archivePath = archivePanel.ArchivePath;
+        var internalPath = archivePanel.ArchiveInternalPath;
+        if (entries.Any(entry => string.Equals(Path.GetFullPath(entry.FullPath), Path.GetFullPath(archivePath), StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show(this, "Нельзя добавить ZIP-файл внутрь самого себя.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        QueueOperation(
+            "Добавление в ZIP",
+            $"{entries.Count} элемент(ов) -> {Path.GetFileName(archivePath)}",
+            (progress, token) => FileOperations.AddEntriesToZipAsync(archivePath, internalPath, entries, progress, token),
+            archivePanel.RefreshList);
+        await Task.CompletedTask;
+    }
+
+    private async Task RenameArchiveEntryAsync(FilePanel panel, FileSystemEntry entry)
+    {
+        if (!FileOperations.IsEditableArchive(panel.ArchivePath))
+        {
+            MessageBox.Show(this, "Переименование поддерживается только внутри ZIP.", "Архив", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var name = InputDialog.Show(this, "Переименовать в ZIP", "Новое имя:", entry.Name);
+        if (string.IsNullOrWhiteSpace(name) || string.Equals(name, entry.Name, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        QueueOperation(
+            "Переименование в ZIP",
+            $"{entry.Name} -> {name}",
+            (progress, token) => FileOperations.RenameZipEntryAsync(entry, name.Trim(), progress, token),
+            panel.RefreshList);
+        await Task.CompletedTask;
+    }
+
+    private void DeleteArchiveSelection()
+    {
+        var entries = _activePanel.MarkedOrFocusedEntries.Where(entry => entry.IsArchiveEntry && !entry.IsParent).ToList();
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        if (!FileOperations.IsEditableArchive(_activePanel.ArchivePath))
+        {
+            MessageBox.Show(this, "Удаление поддерживается только внутри ZIP.", "Архив", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (MessageBox.Show(this, $"Удалить из ZIP {entries.Count} элемент(ов)? Архив будет безопасно пересобран.", "Удаление из ZIP", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        var panel = _activePanel;
+        QueueOperation(
+            "Удаление из ZIP",
+            $"Элементов: {entries.Count}",
+            (progress, token) => FileOperations.DeleteZipEntriesAsync(entries, progress, token),
+            panel.RefreshList);
     }
 
     private async Task CopyOrMoveWithFtpAsync(bool move)
@@ -943,6 +1071,8 @@ internal sealed class MainForm : Form
         }
 
         var targetDirectory = PassivePanel.SettingsPath;
+        var ftpPanel = _activePanel;
+        var localPanel = PassivePanel;
         if (!Directory.Exists(targetDirectory))
         {
             MessageBox.Show(this, "Соседняя локальная папка не найдена.", title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -954,26 +1084,28 @@ internal sealed class MainForm : Form
             return;
         }
 
-        await RunOperationAsync(title, async context =>
+        QueueOperation(title, $"{entries.Count} элемент(ов) -> {targetDirectory}", async (progress, token) =>
         {
             var completed = 0;
             var total = Math.Max(1, entries.Count);
             foreach (var entry in entries)
             {
-                await DownloadFtpEntryAsync(session, entry, targetDirectory, context.Progress, context.CancellationToken, total, () => ++completed, countAsItem: true);
+                await DownloadFtpEntryAsync(session, entry, targetDirectory, progress, token, total, () => ++completed, countAsItem: true);
             }
 
             if (move)
             {
                 foreach (var entry in entries)
                 {
-                    await DeleteFtpEntryAsync(session, entry, context.CancellationToken);
+                    await DeleteFtpEntryAsync(session, entry, token);
                 }
             }
+        }, () =>
+        {
+            localPanel.RefreshList();
+            _ = RefreshFtpPanelAsync(ftpPanel);
         });
-
-        PassivePanel.RefreshList();
-        await RefreshFtpPanelAsync(_activePanel);
+        await Task.CompletedTask;
     }
 
     private async Task UploadToFtpAsync(bool move)
@@ -1002,13 +1134,16 @@ internal sealed class MainForm : Form
             return;
         }
 
-        await RunOperationAsync(title, async context =>
+        var localPanel = _activePanel;
+        var ftpPanel = PassivePanel;
+        var remoteDirectory = ftpPanel.CurrentPath;
+        QueueOperation(title, $"{entries.Count} элемент(ов) -> {remoteDirectory}", async (progress, token) =>
         {
             var completed = 0;
             var total = Math.Max(1, entries.Count);
             foreach (var entry in entries)
             {
-                await UploadLocalEntryAsync(session, entry.FullPath, PassivePanel.CurrentPath, context.Progress, context.CancellationToken, total, () => ++completed, countAsItem: true);
+                await UploadLocalEntryAsync(session, entry.FullPath, remoteDirectory, progress, token, total, () => ++completed, countAsItem: true);
             }
 
             if (move)
@@ -1018,14 +1153,16 @@ internal sealed class MainForm : Form
                     DeleteLocalEntryAfterUpload(entry);
                 }
             }
+        }, () =>
+        {
+            localPanel.RefreshList();
+            _ = RefreshFtpPanelAsync(ftpPanel);
         });
-
-        _activePanel.RefreshList();
-        await RefreshFtpPanelAsync(PassivePanel);
+        await Task.CompletedTask;
     }
 
     private async Task DownloadFtpEntryAsync(
-        FtpClientSession session,
+        IRemoteFileSession session,
         FileSystemEntry entry,
         string localDirectory,
         IProgress<OperationProgress> progress,
@@ -1047,7 +1184,9 @@ internal sealed class MainForm : Form
         }
         else
         {
-            await session.DownloadFileAsync(entry.FullPath, Path.Combine(localDirectory, entry.Name), null, token);
+            var remoteProgress = new Progress<RemoteTransferProgress>(item =>
+                progress.Report(new OperationProgress(0, total, "Скачивание: " + item.Name, item.BytesTransferred, item.TotalBytes ?? 0)));
+            await session.DownloadFileAsync(entry.FullPath, Path.Combine(localDirectory, entry.Name), remoteProgress, token);
         }
 
         if (countAsItem)
@@ -1058,7 +1197,7 @@ internal sealed class MainForm : Form
     }
 
     private async Task UploadLocalEntryAsync(
-        FtpClientSession session,
+        IRemoteFileSession session,
         string localPath,
         string remoteDirectory,
         IProgress<OperationProgress> progress,
@@ -1094,7 +1233,9 @@ internal sealed class MainForm : Form
         else
         {
             var remotePath = FtpClientSession.CombineRemotePath(remoteDirectory, Path.GetFileName(localPath));
-            await session.UploadFileAsync(localPath, remotePath, null, token);
+            var remoteProgress = new Progress<RemoteTransferProgress>(item =>
+                progress.Report(new OperationProgress(0, total, "Закачка: " + item.Name, item.BytesTransferred, item.TotalBytes ?? 0)));
+            await session.UploadFileAsync(localPath, remotePath, remoteProgress, token);
         }
 
         if (countAsItem)
@@ -1149,7 +1290,7 @@ internal sealed class MainForm : Form
             MessageBoxIcon.Warning) == DialogResult.Yes;
     }
 
-    private async Task DeleteFtpEntryAsync(FtpClientSession session, FileSystemEntry entry, CancellationToken token)
+    private async Task DeleteFtpEntryAsync(IRemoteFileSession session, FileSystemEntry entry, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         if (entry.IsDirectory)
@@ -1236,6 +1377,56 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void ShowDirectoryComparison()
+    {
+        if (_leftPanel.IsFtpMode || _rightPanel.IsFtpMode ||
+            _leftPanel.IsArchiveMode || _rightPanel.IsArchiveMode ||
+            _leftPanel.IsSearchMode || _rightPanel.IsSearchMode)
+        {
+            MessageBox.Show(
+                this,
+                "Сравнение каталогов работает между двумя обычными локальными панелями.",
+                "Сравнение каталогов",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        if (!Directory.Exists(_leftPanel.CurrentPath) || !Directory.Exists(_rightPanel.CurrentPath))
+        {
+            MessageBox.Show(this, "Один из каталогов недоступен.", "Сравнение каталогов", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (_directoryCompareForm is { IsDisposed: false })
+        {
+            _directoryCompareForm.Show();
+            _directoryCompareForm.BringToFront();
+            return;
+        }
+
+        var form = new DirectoryCompareForm(_leftPanel.CurrentPath, _rightPanel.CurrentPath);
+        _directoryCompareForm = form;
+        form.FormClosed += (_, _) => _directoryCompareForm = null;
+        form.SynchronizationRequested += (_, request) =>
+        {
+            var direction = request.Direction == DirectorySyncDirection.LeftToRight ? "слева направо" : "справа налево";
+            QueueOperation(
+                "Синхронизация каталогов",
+                $"{request.Items.Count} элемент(ов), {direction}",
+                (progress, token) => DirectoryComparisonService.CopyAsync(request, progress, token),
+                () =>
+                {
+                    RefreshPanels();
+                    if (!form.IsDisposed)
+                    {
+                        _ = form.ReloadAsync();
+                    }
+                });
+        };
+        form.ShowCentered(this);
+    }
+
     private async Task DropFilesIntoPanelAsync(FilePanelDropEventArgs args)
     {
         var entries = args.Paths
@@ -1248,6 +1439,12 @@ internal sealed class MainForm : Form
 
         if (entries.Count == 0)
         {
+            return;
+        }
+
+        if (_activePanel.IsArchiveMode)
+        {
+            await AddEntriesToArchiveAsync(_activePanel, entries);
             return;
         }
 
@@ -1273,18 +1470,21 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (!ConfirmConflicts(entries, args.TargetDirectory, title))
+        var conflictPlan = await ResolveConflictsAsync(entries, args.TargetDirectory, title);
+        if (conflictPlan is null)
         {
             return;
         }
 
-        await RunOperationAsync(
+        QueueOperation(
             title,
-            token => args.Effect == DragDropEffects.Move
-                ? FileOperations.MoveAsync(entries, args.TargetDirectory, token.Progress, token.CancellationToken)
-                : FileOperations.CopyAsync(entries, args.TargetDirectory, token.Progress, token.CancellationToken));
-        RefreshPanels();
+            $"{entries.Count} элемент(ов) -> {args.TargetDirectory}",
+            (progress, token) => args.Effect == DragDropEffects.Move
+                ? FileOperations.MoveAsync(entries, args.TargetDirectory, progress, token, conflictPlan)
+                : FileOperations.CopyAsync(entries, args.TargetDirectory, progress, token, conflictPlan),
+            RefreshPanels);
         UpdateStatus();
+        await Task.CompletedTask;
     }
 
     private void CreateFolder()
@@ -1318,7 +1518,8 @@ internal sealed class MainForm : Form
     {
         if (_activePanel.IsArchiveMode)
         {
-            MessageBox.Show(this, "Переименование внутри ZIP пока не поддержано.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            var archiveEntry = _activePanel.MarkedOrFocusedEntries.FirstOrDefault() ?? _activePanel.FocusedEntry;
+            if (archiveEntry is not null && !archiveEntry.IsParent) _ = RenameArchiveEntryAsync(_activePanel, archiveEntry);
             return;
         }
 
@@ -1337,12 +1538,102 @@ internal sealed class MainForm : Form
         RenameEntry(entry);
     }
 
+    private void ShowBatchRename()
+    {
+        if (_activePanel.IsFtpMode || _activePanel.IsArchiveMode)
+        {
+            MessageBox.Show(
+                this,
+                "Групповое переименование сейчас работает с локальными файлами и папками.",
+                "Групповое переименование",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var entries = _activePanel.MarkedOrFocusedEntries.ToList();
+        if (entries.Count == 0)
+        {
+            MessageBox.Show(this, "Ничего не выделено.", "Групповое переименование", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new BatchRenameForm(entries);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var plans = dialog.Plans.Where(plan => plan.HasChange).ToList();
+        if (plans.Count == 0)
+        {
+            return;
+        }
+
+        var panel = _activePanel;
+        QueueOperation(
+            "Групповое переименование",
+            $"Элементов: {plans.Count}",
+            (progress, token) => BatchRenameEngine.ApplyAsync(plans, progress, token),
+            () =>
+            {
+                if (panel.IsSearchMode)
+                {
+                    panel.LoadPath(panel.SettingsPath);
+                }
+                else
+                {
+                    panel.RefreshList();
+                }
+
+                if (plans.Count == 1)
+                {
+                    panel.SelectPath(plans[0].DestinationPath);
+                }
+            });
+    }
+
+    private async Task UndoBatchRenameAsync()
+    {
+        var history = BatchRenameStore.LoadHistory();
+        if (history is null || history.Entries.Count == 0)
+        {
+            MessageBox.Show(this, "Нет сохранённого массового переименования для отмены.", "Групповое переименование", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var unavailable = history.Entries.FirstOrDefault(entry =>
+            !(entry.IsDirectory ? Directory.Exists(entry.DestinationPath) : File.Exists(entry.DestinationPath)) ||
+            File.Exists(entry.SourcePath) || Directory.Exists(entry.SourcePath));
+        if (unavailable is not null)
+        {
+            MessageBox.Show(this, "Отмена невозможна: один из файлов уже перемещён, удалён или старое имя занято.\n\n" + unavailable.DestinationPath, "Групповое переименование", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (MessageBox.Show(this, $"Вернуть прежние имена для {history.Entries.Count} элемент(ов)?", "Отмена переименования", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        QueueOperation(
+            "Отмена группового переименования",
+            $"Элементов: {history.Entries.Count}",
+            (progress, token) => BatchRenameEngine.UndoAsync(history.Entries, progress, token),
+            () =>
+            {
+                BatchRenameStore.ClearHistory();
+                RefreshPanels();
+            });
+        await Task.CompletedTask;
+    }
+
     private void RenamePanelEntry(FilePanel panel, FileSystemEntry entry)
     {
         SetActivePanel(panel);
         if (panel.IsArchiveMode)
         {
-            MessageBox.Show(this, "Переименование внутри ZIP пока не поддержано.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _ = RenameArchiveEntryAsync(panel, entry);
             return;
         }
 
@@ -1436,11 +1727,11 @@ internal sealed class MainForm : Form
         _activePanel.SelectPath(newPath);
     }
 
-    private async void DeleteSelected(bool permanent)
+    private void DeleteSelected(bool permanent)
     {
         if (_activePanel.IsArchiveMode)
         {
-            MessageBox.Show(this, "Удаление внутри ZIP пока не поддержано.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            DeleteArchiveSelection();
             return;
         }
 
@@ -1464,10 +1755,12 @@ internal sealed class MainForm : Form
             return;
         }
 
-        await RunOperationAsync(
+        var panel = _activePanel;
+        QueueOperation(
             permanent ? "Удаление безвозвратно" : "Удаление в корзину",
-            token => FileOperations.DeleteAsync(entries, permanent, token.Progress, token.CancellationToken));
-        _activePanel.RefreshList();
+            $"Элементов: {entries.Count}",
+            (progress, token) => FileOperations.DeleteAsync(entries, permanent, progress, token),
+            panel.RefreshList);
     }
 
     private async Task DeleteFtpSelectedAsync()
@@ -1489,20 +1782,20 @@ internal sealed class MainForm : Form
             return;
         }
 
-        await RunOperationAsync("FTP удаление", async context =>
+        var panel = _activePanel;
+        QueueOperation("FTP удаление", $"Элементов: {entries.Count}", async (progress, token) =>
         {
             var completed = 0;
             var total = Math.Max(1, entries.Count);
             foreach (var entry in entries)
             {
-                context.Progress.Report(new OperationProgress(completed, total, "FTP: " + entry.FullPath));
-                await DeleteFtpEntryAsync(session, entry, context.CancellationToken);
+                progress.Report(new OperationProgress(completed, total, "Удаление: " + entry.FullPath));
+                await DeleteFtpEntryAsync(session, entry, token);
                 completed++;
-                context.Progress.Report(new OperationProgress(completed, total, entry.Name));
+                progress.Report(new OperationProgress(completed, total, entry.Name));
             }
-        });
-
-        await RefreshFtpPanelAsync(_activePanel);
+        }, () => _ = RefreshFtpPanelAsync(panel));
+        await Task.CompletedTask;
     }
 
     private async Task CreateZipAsync()
@@ -1520,9 +1813,17 @@ internal sealed class MainForm : Form
         }
 
         var zipPath = CreateUniqueZipPath(entries, PassivePanel.CurrentPath);
-        await RunOperationAsync("Упаковка ZIP", token => FileOperations.CreateZipAsync(entries, zipPath, token.Progress, token.CancellationToken));
-        RefreshPanels();
-        PassivePanel.SelectPath(zipPath);
+        var targetPanel = PassivePanel;
+        QueueOperation(
+            "Упаковка ZIP",
+            zipPath,
+            (progress, token) => FileOperations.CreateZipAsync(entries, zipPath, progress, token),
+            () =>
+            {
+                RefreshPanels();
+                targetPanel.SelectPath(zipPath);
+            });
+        await Task.CompletedTask;
     }
 
     private async Task ExtractZipAsync()
@@ -1540,27 +1841,31 @@ internal sealed class MainForm : Form
         }
 
         var zipEntries = _activePanel.MarkedOrFocusedEntries
-            .Where(entry => !entry.IsDirectory && string.Equals(Path.GetExtension(entry.FullPath), ".zip", StringComparison.OrdinalIgnoreCase))
+            .Where(entry => !entry.IsDirectory && FileOperations.IsArchiveFile(entry.FullPath))
             .ToList();
 
         if (zipEntries.Count == 0)
         {
-            MessageBox.Show(this, "Выберите один или несколько ZIP-файлов.", "Распаковка ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Выберите один или несколько архивов ZIP, 7z или RAR.", "Распаковка архива", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
         var question = zipEntries.Count == 1
-            ? $"Распаковать ZIP в целевую панель?\n\n{PassivePanel.CurrentPath}"
-            : $"Распаковать {zipEntries.Count} ZIP-файла в отдельные папки целевой панели?\n\n{PassivePanel.CurrentPath}";
+            ? $"Распаковать архив в целевую панель?\n\n{PassivePanel.CurrentPath}"
+            : $"Распаковать {zipEntries.Count} архива в отдельные папки целевой панели?\n\n{PassivePanel.CurrentPath}";
 
-        if (MessageBox.Show(this, question, "Распаковка ZIP", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        if (MessageBox.Show(this, question, "Распаковка архива", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
         {
             return;
         }
 
         var paths = zipEntries.Select(entry => entry.FullPath).ToList();
-        await RunOperationAsync("Распаковка ZIP", token => FileOperations.ExtractZipAsync(paths, PassivePanel.CurrentPath, token.Progress, token.CancellationToken));
-        RefreshPanels();
+        var targetDirectory = PassivePanel.CurrentPath;
+        QueueOperation(
+            "Распаковка архива",
+            $"{paths.Count} архив(ов) -> {targetDirectory}",
+            (progress, token) => FileOperations.ExtractZipAsync(paths, targetDirectory, progress, token),
+            RefreshPanels);
     }
 
     private void ShowSearch()
@@ -1593,6 +1898,80 @@ internal sealed class MainForm : Form
         search.ShowDialog(this);
     }
 
+    private void ShowHashes()
+    {
+        if (_activePanel.IsFtpMode || _activePanel.IsArchiveMode)
+        {
+            MessageBox.Show(this, "Контрольные суммы вычисляются для локальных файлов. Сначала скачайте или распакуйте выбранное.", "Контрольные суммы", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var files = _activePanel.MarkedOrFocusedEntries.Where(entry => !entry.IsDirectory && !entry.IsParent && File.Exists(entry.FullPath)).Select(entry => entry.FullPath).ToList();
+        if (files.Count == 0)
+        {
+            MessageBox.Show(this, "Выберите один или несколько файлов.", "Контрольные суммы", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var form = new HashesForm(files);
+        form.ShowDialog(this);
+    }
+
+    private void ShowDuplicateFinder()
+    {
+        if (_activePanel.IsFtpMode || _activePanel.IsArchiveMode)
+        {
+            MessageBox.Show(this, "Поиск одинаковых файлов работает в локальных каталогах.", "Поиск дубликатов", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var form = new DuplicateFinderForm(_activePanel.SettingsPath);
+        form.OpenRequested += path =>
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (directory is null) return;
+            _activePanel.LoadPath(directory);
+            _activePanel.SelectPath(path);
+            _activePanel.FocusList();
+        };
+        form.FeedResultsRequested += (entries, caption) =>
+        {
+            _activePanel.LoadSearchResults(entries, caption);
+            _activePanel.FocusList();
+            UpdateStatus();
+        };
+        form.ShowDialog(this);
+    }
+
+    private void ShowProperties()
+    {
+        if (_activePanel.IsFtpMode || _activePanel.IsArchiveMode)
+        {
+            MessageBox.Show(this, "Свойства с изменением дат и атрибутов доступны для локальных файлов и папок.", "Свойства", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var entry = _activePanel.FocusedEntry;
+        if (entry is null || entry.IsParent)
+        {
+            return;
+        }
+
+        try
+        {
+            using var properties = new FilePropertiesForm(entry.FullPath);
+            if (properties.ShowDialog(this) == DialogResult.OK)
+            {
+                _activePanel.RefreshList();
+                _activePanel.SelectPath(entry.FullPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Свойства", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private async void ShowFtpClient()
     {
         var targetPanel = _activePanel;
@@ -1618,7 +1997,9 @@ internal sealed class MainForm : Form
         await RunOperationAsync("FTP подключение", async context =>
         {
             DisconnectFtpPanel(panel);
-            var session = new FtpClientSession();
+            IRemoteFileSession session = profile.Protocol == RemoteConnectionProtocol.Sftp
+                ? new SftpClientSession()
+                : new FtpClientSession();
             try
             {
                 await session.ConnectAsync(CreateFtpOptions(profile), context.CancellationToken);
@@ -1723,7 +2104,7 @@ internal sealed class MainForm : Form
         _ftpProfiles.Clear();
     }
 
-    private bool TryGetFtpSession(FilePanel panel, out FtpClientSession session, out FtpConnectionProfile profile)
+    private bool TryGetFtpSession(FilePanel panel, out IRemoteFileSession session, out FtpConnectionProfile profile)
     {
         if (_ftpSessions.TryGetValue(panel, out session!) &&
             _ftpProfiles.TryGetValue(panel, out profile!))
@@ -1743,7 +2124,12 @@ internal sealed class MainForm : Form
             Host = profile.Host.Trim(),
             Port = profile.Port,
             UserName = profile.Anonymous ? "anonymous" : profile.UserName.Trim(),
-            Password = profile.Anonymous ? "guest@" : profile.Password
+            Password = profile.Anonymous ? "guest@" : profile.Password,
+            UseTls = profile.Protocol == RemoteConnectionProtocol.FtpsExplicit,
+            AcceptAnyCertificate = profile.AcceptAnyCertificate,
+            ResumeTransfers = profile.ResumeTransfers,
+            AutoReconnect = profile.AutoReconnect,
+            SpeedLimitKbps = profile.SpeedLimitKbps
         };
     }
 
@@ -1945,18 +2331,22 @@ internal sealed class MainForm : Form
             return;
         }
 
-        if (!ConfirmConflicts(entries, _activePanel.CurrentPath, "Вставка"))
+        var conflictPlan = await ResolveConflictsAsync(entries, _activePanel.CurrentPath, "Вставка");
+        if (conflictPlan is null)
         {
             return;
         }
 
         var move = GetClipboardDropEffect() == 2;
-        await RunOperationAsync(
+        var targetDirectory = _activePanel.CurrentPath;
+        QueueOperation(
             move ? "Вставка с перемещением" : "Вставка с копированием",
-            token => move
-                ? FileOperations.MoveAsync(entries, _activePanel.CurrentPath, token.Progress, token.CancellationToken)
-                : FileOperations.CopyAsync(entries, _activePanel.CurrentPath, token.Progress, token.CancellationToken));
-        RefreshPanels();
+            $"{entries.Count} элемент(ов) -> {targetDirectory}",
+            (progress, token) => move
+                ? FileOperations.MoveAsync(entries, targetDirectory, progress, token, conflictPlan)
+                : FileOperations.CopyAsync(entries, targetDirectory, progress, token, conflictPlan),
+            RefreshPanels);
+        await Task.CompletedTask;
     }
 
     private void ShowQuickLaunchEmptyMenu(Point screenLocation)
@@ -2099,6 +2489,42 @@ internal sealed class MainForm : Form
             title,
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning) == DialogResult.Yes;
+    }
+
+    private async Task<FileConflictPlan?> ResolveConflictsAsync(IReadOnlyList<FileSystemEntry> entries, string targetDirectory, string title)
+    {
+        if (!FileOperations.HasTopLevelConflicts(entries, targetDirectory))
+        {
+            return new FileConflictPlan([]);
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        using var progressForm = new ProgressForm("Проверка совпадений");
+        progressForm.CancelRequested += (_, _) => cancellation.Cancel();
+        var progress = new Progress<OperationProgress>(progressForm.SetProgress);
+        progressForm.ShowCentered(this);
+        IReadOnlyList<FileConflict> conflicts;
+        try
+        {
+            conflicts = await FileOperations.FindConflictsAsync(entries, targetDirectory, progress, cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, title, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return null;
+        }
+        finally
+        {
+            progressForm.Close();
+        }
+
+        return conflicts.Count == 0
+            ? new FileConflictPlan([])
+            : ConflictResolutionForm.Resolve(this, title, conflicts);
     }
 
     private bool ValidateDropTarget(IReadOnlyList<FileSystemEntry> entries, string targetDirectory, string title)
@@ -2295,11 +2721,52 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void QueueOperation(
+        string title,
+        string details,
+        Func<IProgress<OperationProgress>, CancellationToken, Task> operation,
+        Action? completed = null)
+    {
+        Action? safeCompleted = completed is null
+            ? null
+            : () => RunOnUiThread(completed);
+        _operationQueue.Enqueue(title, details, operation, safeCompleted);
+        ShowOperationQueue();
+    }
+
+    private void ShowOperationQueue()
+    {
+        if (_operationQueueForm is null || _operationQueueForm.IsDisposed)
+        {
+            _operationQueueForm = new OperationQueueForm(_operationQueue);
+            _operationQueueForm.FormClosed += (_, _) => _operationQueueForm = null;
+        }
+
+        _operationQueueForm.ShowCentered(this);
+    }
+
+    private void RunOnUiThread(Action action)
+    {
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(action);
+        }
+        else
+        {
+            action();
+        }
+    }
+
     private void ShowAbout()
     {
         MessageBox.Show(
             this,
-            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nTab переключить панель\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nNum+ добавить выделение по маске\nNum- убрать выделение по маске\nNum* выделить всё\nF2 или спокойный второй клик переименовать\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+D избранные каталоги\nCtrl+F поиск, найденное можно вывести в панель\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nDrag && Drop: обычный бросок копирует, Shift перемещает\nZIP: Enter открыть как папку, F5 распаковать выбранное\nFTP: подключение в активную панель, F5/F6 обмен с локальной панелью, keep-alive от простоя\nFTP сервер: обычный FTP без TLS",
+            $"AZERTY Commander {BuildInfo.Version}\nPrivalov Oleg\nСборка: {BuildInfo.BuildTimeLocal}\n\nTab переключить панель\nF3 просмотр текста\nF5 копирование\nF6 перемещение\nF7 новая папка\nF8/Del удалить в корзину\nShift+Del удалить безвозвратно\nIns выделить и вниз\nNum+ добавить выделение по маске\nNum- убрать выделение по маске\nNum* выделить всё\nF2 или спокойный второй клик переименовать\nCtrl+M групповое переименование с предпросмотром\nПравый клик открывает меню Windows\nCtrl+C/Ctrl+Insert копировать\nCtrl+X вырезать\nCtrl+V/Shift+Insert вставить\nCtrl+D избранные каталоги\nCtrl+F поиск, найденное можно вывести в панель\nCtrl+Shift+Enter в командной строке вставляет полный путь\nСравнение файлов: левый против правого побайтово\nСравнение каталогов: различия и синхронизация в обе стороны\nОчередь операций: скорость, время, пауза и отмена\nDrag && Drop: обычный бросок копирует, Shift перемещает\nZIP: Enter открыть как папку, F5 распаковать выбранное\nFTP: подключение в активную панель, F5/F6 обмен с локальной панелью, keep-alive от простоя\nFTP сервер: обычный FTP без TLS",
             "О программе",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);

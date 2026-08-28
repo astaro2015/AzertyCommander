@@ -20,6 +20,16 @@ internal sealed class SearchForm : Form
     private readonly CheckBox _dosBox = new();
     private readonly CheckBox _utf16Box = new();
     private readonly CheckBox _utf8Box = new();
+    private readonly CheckBox _minimumSizeEnabledBox = new();
+    private readonly NumericUpDown _minimumSizeBox = new();
+    private readonly ComboBox _minimumSizeUnitBox = new();
+    private readonly CheckBox _maximumSizeEnabledBox = new();
+    private readonly NumericUpDown _maximumSizeBox = new();
+    private readonly ComboBox _maximumSizeUnitBox = new();
+    private readonly CheckBox _dateFromEnabledBox = new();
+    private readonly DateTimePicker _dateFromPicker = new();
+    private readonly CheckBox _dateToEnabledBox = new();
+    private readonly DateTimePicker _dateToPicker = new();
     private readonly Button _startButton = new();
     private readonly Button _cancelButton = new();
     private readonly Button _openButton = new();
@@ -35,9 +45,11 @@ internal sealed class SearchForm : Form
     public SearchForm(string root)
     {
         Text = "Поиск файлов";
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(980, 640);
-        ClientSize = new Size(1220, 840);
+        MinimumSize = new Size(980, 700);
+        ClientSize = new Size(1220, 860);
         Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
         BuildUi(root);
@@ -80,9 +92,9 @@ internal sealed class SearchForm : Form
             RowCount = 3,
             Margin = new Padding(0, 0, 8, 0)
         };
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 368));
+        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 414));
         main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildGeneralTab(root));
@@ -109,7 +121,7 @@ internal sealed class SearchForm : Form
             ColumnCount = 1,
             RowCount = 3
         };
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 168));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
@@ -125,14 +137,13 @@ internal sealed class SearchForm : Form
         var panel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 5,
+            ColumnCount = 4,
             RowCount = 4
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 360));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
@@ -143,7 +154,7 @@ internal sealed class SearchForm : Form
         _maskBox.DropDownStyle = ComboBoxStyle.DropDown;
         _maskBox.Text = "*";
         _maskBox.Items.AddRange(["*", "*.exe", "*.txt;*.doc;*.docx", "*.zip;*.rar;*.7z"]);
-        panel.SetColumnSpan(_maskBox, 4);
+        panel.SetColumnSpan(_maskBox, 3);
         panel.Controls.Add(_maskBox, 1, 0);
 
         panel.Controls.Add(CreateLabel("Место поиска:"), 0, 1);
@@ -165,13 +176,13 @@ internal sealed class SearchForm : Form
             Margin = Padding.Empty
         };
         _regexBox.Text = "Рег. выраж.";
-        _regexBox.AutoSize = true;
+        ConfigureCheckBox(_regexBox);
         _includeFoldersBox.Text = "Искать также каталоги";
         _includeFoldersBox.Checked = true;
-        _includeFoldersBox.AutoSize = true;
+        ConfigureCheckBox(_includeFoldersBox);
         flags.Controls.Add(_regexBox);
         flags.Controls.Add(_includeFoldersBox);
-        panel.SetColumnSpan(flags, 4);
+        panel.SetColumnSpan(flags, 3);
         panel.Controls.Add(flags, 1, 2);
 
         panel.Controls.Add(CreateLabel("Глубина вложенности:"), 0, 3);
@@ -180,7 +191,7 @@ internal sealed class SearchForm : Form
         _depthBox.Width = 250;
         _depthBox.Items.AddRange(["Все (неограниченная)", "Только текущий каталог", "1 уровень", "2 уровня", "3 уровня"]);
         _depthBox.SelectedIndex = 0;
-        panel.SetColumnSpan(_depthBox, 4);
+        panel.SetColumnSpan(_depthBox, 3);
         panel.Controls.Add(_depthBox, 1, 3);
 
         return panel;
@@ -197,14 +208,14 @@ internal sealed class SearchForm : Form
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
 
         _withTextBox.Text = "С текстом:";
-        _withTextBox.Dock = DockStyle.Fill;
+        ConfigureCheckBox(_withTextBox);
         _withTextBox.CheckedChanged += (_, _) => UpdateTextSearchControls();
         panel.Controls.Add(_withTextBox, 0, 0);
 
@@ -223,6 +234,20 @@ internal sealed class SearchForm : Form
         _ansiBox.Checked = true;
         _utf8Box.Checked = true;
 
+        foreach (var checkBox in new[]
+                 {
+                     _wholeWordsBox,
+                     _caseSensitiveBox,
+                     _textRegexBox,
+                     _ansiBox,
+                     _dosBox,
+                     _utf16Box,
+                     _utf8Box
+                 })
+        {
+            ConfigureCheckBox(checkBox);
+        }
+
         panel.Controls.Add(_wholeWordsBox, 1, 1);
         panel.Controls.Add(_caseSensitiveBox, 1, 2);
         panel.Controls.Add(_textRegexBox, 1, 3);
@@ -239,13 +264,37 @@ internal sealed class SearchForm : Form
         var page = new TabPage("Дополнительно") { Padding = new Padding(8) };
         var panel = new TableLayoutPanel
         {
-            Dock = DockStyle.Top,
-            ColumnCount = 1,
-            RowCount = 2,
-            Height = 80
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 5
         };
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (var row = 0; row < 5; row++) panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+
+        ConfigureFilterCheckBox(_minimumSizeEnabledBox, "Размер не меньше:");
+        ConfigureSizeInput(_minimumSizeBox, _minimumSizeUnitBox);
+        ConfigureFilterCheckBox(_maximumSizeEnabledBox, "Размер не больше:");
+        ConfigureSizeInput(_maximumSizeBox, _maximumSizeUnitBox);
+        ConfigureFilterCheckBox(_dateFromEnabledBox, "Изменён не раньше:");
+        ConfigureDatePicker(_dateFromPicker, DateTime.Today.AddMonths(-1));
+        ConfigureFilterCheckBox(_dateToEnabledBox, "Изменён не позже:");
+        ConfigureDatePicker(_dateToPicker, DateTime.Today);
+
+        panel.Controls.Add(_minimumSizeEnabledBox, 0, 0);
+        panel.Controls.Add(_minimumSizeBox, 1, 0);
+        panel.Controls.Add(_minimumSizeUnitBox, 2, 0);
+        panel.Controls.Add(_maximumSizeEnabledBox, 0, 1);
+        panel.Controls.Add(_maximumSizeBox, 1, 1);
+        panel.Controls.Add(_maximumSizeUnitBox, 2, 1);
+        panel.Controls.Add(_dateFromEnabledBox, 0, 2);
+        panel.Controls.Add(_dateFromPicker, 1, 2);
+        panel.SetColumnSpan(_dateFromPicker, 2);
+        panel.Controls.Add(_dateToEnabledBox, 0, 3);
+        panel.Controls.Add(_dateToPicker, 1, 3);
+        panel.SetColumnSpan(_dateToPicker, 2);
 
         var hiddenBox = new CheckBox
         {
@@ -254,7 +303,9 @@ internal sealed class SearchForm : Form
             Enabled = false,
             Dock = DockStyle.Fill
         };
-        panel.Controls.Add(hiddenBox, 0, 0);
+        ConfigureCheckBox(hiddenBox);
+        panel.SetColumnSpan(hiddenBox, 4);
+        panel.Controls.Add(hiddenBox, 0, 4);
         page.Controls.Add(panel);
         return page;
     }
@@ -269,7 +320,7 @@ internal sealed class SearchForm : Form
         };
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
 
         _resultsTitleLabel.Text = "Результаты поиска";
         _resultsTitleLabel.Dock = DockStyle.Fill;
@@ -308,7 +359,7 @@ internal sealed class SearchForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 5,
             RowCount = 1,
-            Padding = new Padding(0, 6, 0, 0)
+            Padding = new Padding(0, 5, 0, 1)
         };
         bottomButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         bottomButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
@@ -317,16 +368,16 @@ internal sealed class SearchForm : Form
         bottomButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
 
         _viewButton.Text = "F3 Просмотр";
-        _viewButton.Dock = DockStyle.Fill;
+        ConfigureActionButton(_viewButton);
         _viewButton.Click += (_, _) => ViewSelected();
         _newSearchButton.Text = "Новый поиск";
-        _newSearchButton.Dock = DockStyle.Fill;
+        ConfigureActionButton(_newSearchButton);
         _newSearchButton.Click += (_, _) => ResetSearch();
         _openButton.Text = "Перейти к файлу";
-        _openButton.Dock = DockStyle.Fill;
+        ConfigureActionButton(_openButton);
         _openButton.Click += (_, _) => OpenSelected();
         _feedButton.Text = "Вывести всё в панель";
-        _feedButton.Dock = DockStyle.Fill;
+        ConfigureActionButton(_feedButton);
         _feedButton.Click += (_, _) => FeedResultsToPanel();
 
         bottomButtons.Controls.Add(_viewButton, 1, 0);
@@ -345,17 +396,17 @@ internal sealed class SearchForm : Form
             Dock = DockStyle.Top,
             ColumnCount = 1,
             RowCount = 3,
-            Height = 116
+            Height = 132
         };
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
 
         _startButton.Text = "Начать поиск";
-        _startButton.Dock = DockStyle.Fill;
+        ConfigureActionButton(_startButton);
         _startButton.Click += async (_, _) => await StartSearchAsync();
         _cancelButton.Text = "Отмена";
-        _cancelButton.Dock = DockStyle.Fill;
+        ConfigureActionButton(_cancelButton);
         _cancelButton.Click += (_, _) =>
         {
             if (_searchCancellation is null)
@@ -508,7 +559,23 @@ internal sealed class SearchForm : Form
             _caseSensitiveBox.Checked,
             _wholeWordsBox.Checked,
             _textRegexBox.Checked,
-            encodings);
+            encodings,
+            _minimumSizeEnabledBox.Checked ? SizeInBytes(_minimumSizeBox, _minimumSizeUnitBox) : null,
+            _maximumSizeEnabledBox.Checked ? SizeInBytes(_maximumSizeBox, _maximumSizeUnitBox) : null,
+            _dateFromEnabledBox.Checked ? _dateFromPicker.Value.Date : null,
+            _dateToEnabledBox.Checked ? _dateToPicker.Value.Date.AddDays(1).AddTicks(-1) : null);
+
+        if (options.MinimumSize is { } minimum && options.MaximumSize is { } maximum && minimum > maximum)
+        {
+            MessageBox.Show(this, "Минимальный размер больше максимального.", "Поиск", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        if (options.ModifiedFrom is { } from && options.ModifiedTo is { } to && from > to)
+        {
+            MessageBox.Show(this, "Начальная дата позже конечной.", "Поиск", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
         return true;
     }
 
@@ -554,12 +621,29 @@ internal sealed class SearchForm : Form
                 continue;
             }
 
+            FileInfo info;
+            try
+            {
+                info = new FileInfo(file);
+                if (options.MinimumSize is { } minimum && info.Length < minimum ||
+                    options.MaximumSize is { } maximum && info.Length > maximum ||
+                    options.ModifiedFrom is { } from && info.LastWriteTime < from ||
+                    options.ModifiedTo is { } to && info.LastWriteTime > to)
+                {
+                    continue;
+                }
+            }
+            catch
+            {
+                continue;
+            }
+
             if (textMatcher is not null && !FileContainsText(file, textMatcher, options.TextEncodings, token))
             {
                 continue;
             }
 
-            reporter.AddResult(SearchResult.FromFile(new FileInfo(file)));
+            reporter.AddResult(SearchResult.FromFile(info));
         }
 
         foreach (var childDirectory in SafeDirectories(directory))
@@ -568,7 +652,18 @@ internal sealed class SearchForm : Form
             var childName = Path.GetFileName(childDirectory);
             if (options.IncludeFolders && nameMatcher.IsMatch(childName))
             {
-                reporter.AddResult(SearchResult.FromDirectory(new DirectoryInfo(childDirectory)));
+                try
+                {
+                    var info = new DirectoryInfo(childDirectory);
+                    if ((options.ModifiedFrom is null || info.LastWriteTime >= options.ModifiedFrom) &&
+                        (options.ModifiedTo is null || info.LastWriteTime <= options.ModifiedTo))
+                    {
+                        reporter.AddResult(SearchResult.FromDirectory(info));
+                    }
+                }
+                catch
+                {
+                }
             }
 
             if (options.MaxDepth is null || depth < options.MaxDepth.Value)
@@ -915,9 +1010,9 @@ internal sealed class SearchForm : Form
         var button = new Button
         {
             Text = text,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(4, 3, 0, 3)
+            Margin = new Padding(4, 2, 0, 2)
         };
+        ConfigureActionButton(button);
         button.Click += click;
         return button;
     }
@@ -927,11 +1022,69 @@ internal sealed class SearchForm : Form
         var button = new Button
         {
             Text = text,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(4, 3, 4, 3)
+            Margin = new Padding(4, 2, 4, 2)
         };
+        ConfigureActionButton(button);
         button.Click += click;
         return button;
+    }
+
+    private static void ConfigureActionButton(Button button)
+    {
+        button.Dock = DockStyle.Fill;
+        button.MinimumSize = new Size(0, 36);
+        button.UseMnemonic = false;
+        if (button.Margin == Padding.Empty || button.Margin == new Padding(3))
+        {
+            button.Margin = new Padding(4, 2, 4, 2);
+        }
+    }
+
+    private static void ConfigureCheckBox(CheckBox checkBox)
+    {
+        checkBox.AutoSize = false;
+        checkBox.Dock = DockStyle.Fill;
+        checkBox.MinimumSize = new Size(0, 30);
+        checkBox.Margin = new Padding(3, 2, 3, 2);
+        checkBox.TextAlign = ContentAlignment.MiddleLeft;
+        checkBox.UseMnemonic = false;
+    }
+
+    private static void ConfigureFilterCheckBox(CheckBox checkBox, string text)
+    {
+        checkBox.Text = text;
+        checkBox.Dock = DockStyle.Fill;
+        checkBox.TextAlign = ContentAlignment.MiddleLeft;
+        checkBox.UseMnemonic = false;
+    }
+
+    private static void ConfigureSizeInput(NumericUpDown input, ComboBox unit)
+    {
+        input.Maximum = decimal.MaxValue;
+        input.DecimalPlaces = 0;
+        input.ThousandsSeparator = true;
+        input.Dock = DockStyle.Fill;
+        input.Margin = new Padding(3, 4, 3, 4);
+        unit.DropDownStyle = ComboBoxStyle.DropDownList;
+        unit.Items.AddRange(["байт", "КБ", "МБ", "ГБ"]);
+        unit.SelectedIndex = 2;
+        unit.Dock = DockStyle.Fill;
+        unit.Margin = new Padding(3, 4, 3, 4);
+    }
+
+    private static void ConfigureDatePicker(DateTimePicker picker, DateTime value)
+    {
+        picker.Format = DateTimePickerFormat.Custom;
+        picker.CustomFormat = "dd.MM.yyyy";
+        picker.Value = value;
+        picker.Dock = DockStyle.Fill;
+        picker.Margin = new Padding(3, 4, 3, 4);
+    }
+
+    private static long SizeInBytes(NumericUpDown input, ComboBox unit)
+    {
+        var multiplier = unit.SelectedIndex switch { 1 => 1024M, 2 => 1024M * 1024M, 3 => 1024M * 1024M * 1024M, _ => 1M };
+        return Decimal.ToInt64(Math.Min(long.MaxValue, input.Value * multiplier));
     }
 
     private sealed record SearchOptions(
@@ -945,7 +1098,11 @@ internal sealed class SearchForm : Form
         bool TextCaseSensitive,
         bool TextWholeWords,
         bool TextRegex,
-        IReadOnlyList<Encoding> TextEncodings);
+        IReadOnlyList<Encoding> TextEncodings,
+        long? MinimumSize,
+        long? MaximumSize,
+        DateTime? ModifiedFrom,
+        DateTime? ModifiedTo);
 
     private sealed record SearchProgress(IReadOnlyList<SearchResult>? Results, string? CurrentPath, bool SearchInterrupted);
 

@@ -70,13 +70,15 @@ internal sealed class FilePanel : UserControl
     public bool IsSearchMode => _isSearchMode;
 
     public bool IsArchiveMode => _isArchiveMode;
+    public string ArchivePath => _archivePath;
+    public string ArchiveInternalPath => _archiveInternalPath;
 
     public string SettingsPath => _isFtpMode || _isSearchMode || _isArchiveMode ? _lastLocalPath : CurrentPath;
 
     public string CommandPathText => _isFtpMode
         ? $"ftp:{_ftpConnectionName}:{CurrentPath}"
         : _isSearchMode ? "[Поиск] " + _searchCaption
-        : _isArchiveMode ? "[ZIP] " + _archivePath + (_archiveInternalPath.Length == 0 ? string.Empty : "\\" + _archiveInternalPath.Replace('/', '\\'))
+        : _isArchiveMode ? "[АРХИВ] " + _archivePath + (_archiveInternalPath.Length == 0 ? string.Empty : "\\" + _archiveInternalPath.Replace('/', '\\'))
         : CurrentPath;
 
     public IReadOnlyList<FileSystemEntry> Entries => _entries.Where(entry => !entry.IsParent).ToList();
@@ -266,27 +268,27 @@ internal sealed class FilePanel : UserControl
         ExitArchiveMode();
 
         var fullArchivePath = Path.GetFullPath(archivePath);
-        if (!FileOperations.IsZipFile(fullArchivePath))
+        if (!FileOperations.IsArchiveFile(fullArchivePath))
         {
-            MessageBox.Show(this, "ZIP-файл не найден.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "Поддерживаемый архив не найден.", "Архив", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
         var parent = Path.GetDirectoryName(fullArchivePath);
         if (string.IsNullOrWhiteSpace(parent) || !Directory.Exists(parent))
         {
-            MessageBox.Show(this, "Папка ZIP-файла не найдена.", "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "Папка архива не найдена.", "Архив", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
         IReadOnlyList<FileSystemEntry> loaded;
         try
         {
-            loaded = FileOperations.ListZipEntries(fullArchivePath, internalPath);
+            loaded = FileOperations.ListArchiveEntries(fullArchivePath, internalPath);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "ZIP", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, ex.Message, "Архив", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
@@ -728,7 +730,7 @@ internal sealed class FilePanel : UserControl
 
         try
         {
-            if (FileOperations.IsZipFile(entry.FullPath))
+            if (FileOperations.IsArchiveFile(entry.FullPath))
             {
                 LoadArchive(entry.FullPath);
                 return;
@@ -849,7 +851,7 @@ internal sealed class FilePanel : UserControl
         }
 
         var previousPath = _archiveInternalPath;
-        var parentPath = FileOperations.ParentZipEntryPath(previousPath);
+        var parentPath = FileOperations.ParentArchiveEntryPath(previousPath);
         LoadArchivePath(_archivePath, parentPath, previousPath);
     }
 
@@ -1747,7 +1749,7 @@ internal sealed class FilePanel : UserControl
 
         if (_isArchiveMode)
         {
-            _spaceLabel.Text = $"ZIP: {Path.GetFileName(_archivePath)}";
+            _spaceLabel.Text = $"Архив: {Path.GetFileName(_archivePath)}";
             return;
         }
 

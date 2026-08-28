@@ -9,4 +9,14 @@ internal sealed class FtpConnectionOptions
     public string UserName { get; init; } = "anonymous";
 
     public string Password { get; init; } = "guest@";
+
+    public bool UseTls { get; init; }
+
+    public bool AcceptAnyCertificate { get; init; }
+
+    public bool ResumeTransfers { get; init; } = true;
+
+    public bool AutoReconnect { get; init; } = true;
+
+    public int SpeedLimitKbps { get; init; }
 }

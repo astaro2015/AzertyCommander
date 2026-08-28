@@ -11,6 +11,11 @@ internal sealed class FtpConnectionEditorForm : Form
     private readonly ComboBox _groupBox = new();
     private readonly CheckBox _anonymousBox = new();
     private readonly CheckBox _passiveBox = new();
+    private readonly ComboBox _protocolBox = new();
+    private readonly CheckBox _resumeBox = new();
+    private readonly CheckBox _reconnectBox = new();
+    private readonly NumericUpDown _speedLimitBox = new();
+    private readonly CheckBox _acceptCertificateBox = new();
     private readonly FtpConnectionProfile _profile;
 
     public FtpConnectionEditorForm(FtpConnectionProfile profile, IEnumerable<string> groups, string defaultLocalDirectory)
@@ -24,7 +29,7 @@ internal sealed class FtpConnectionEditorForm : Form
 
     private void BuildUi(IEnumerable<string> groups, string defaultLocalDirectory)
     {
-        Text = "Настройка FTP-соединения";
+        Text = "Настройка удалённого соединения";
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MinimizeBox = false;
@@ -161,7 +166,7 @@ internal sealed class FtpConnectionEditorForm : Form
 
         var note = new Label
         {
-            Text = "Обычный FTP без TLS. Для интернета лучше VPN/туннель или отдельный SFTP-клиент.",
+            Text = "Протокол, автоподключение, возобновление и ограничение скорости задаются на странице «Расширенные».",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
@@ -180,15 +185,26 @@ internal sealed class FtpConnectionEditorForm : Form
         {
             Dock = DockStyle.Top,
             ColumnCount = 2,
-            RowCount = 2,
-            Height = 88
+            RowCount = 6,
+            Height = 252
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 168));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        for (var row = 0; row < 6; row++) grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
 
-        grid.Controls.Add(CreateLabel("Папка в списке:"), 0, 0);
+        grid.Controls.Add(CreateLabel("Протокол:"), 0, 0);
+        _protocolBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _protocolBox.Items.AddRange(["FTP", "FTPS (явный TLS)", "SFTP (SSH)"]);
+        _protocolBox.SelectedIndex = 0;
+        _protocolBox.Dock = DockStyle.Fill;
+        _protocolBox.SelectedIndexChanged += (_, _) =>
+        {
+            _acceptCertificateBox.Enabled = _protocolBox.SelectedIndex == (int)RemoteConnectionProtocol.FtpsExplicit;
+            UpdateAnonymousFields();
+        };
+        grid.Controls.Add(_protocolBox, 1, 0);
+
+        grid.Controls.Add(CreateLabel("Папка в списке:"), 0, 1);
         _groupBox.Dock = DockStyle.Fill;
         _groupBox.DropDownStyle = ComboBoxStyle.DropDown;
         _groupBox.Items.Add(string.Empty);
@@ -196,17 +212,29 @@ internal sealed class FtpConnectionEditorForm : Form
         {
             _groupBox.Items.Add(group);
         }
-        grid.Controls.Add(_groupBox, 1, 0);
+        grid.Controls.Add(_groupBox, 1, 1);
 
-        var hint = new Label
-        {
-            Text = "Папка нужна только для порядка в списке соединений.",
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
-        };
-        grid.SetColumnSpan(hint, 2);
-        grid.Controls.Add(hint, 0, 1);
+        _resumeBox.Text = "Продолжать недокачанные и недозалитые файлы";
+        _resumeBox.Dock = DockStyle.Fill;
+        _resumeBox.UseMnemonic = false;
+        grid.SetColumnSpan(_resumeBox, 2);
+        grid.Controls.Add(_resumeBox, 0, 2);
+        _reconnectBox.Text = "Автоматически переподключаться после разрыва";
+        _reconnectBox.Dock = DockStyle.Fill;
+        _reconnectBox.UseMnemonic = false;
+        grid.SetColumnSpan(_reconnectBox, 2);
+        grid.Controls.Add(_reconnectBox, 0, 3);
+        grid.Controls.Add(CreateLabel("Лимит скорости, КБ/с:"), 0, 4);
+        _speedLimitBox.Maximum = 10_000_000;
+        _speedLimitBox.ThousandsSeparator = true;
+        _speedLimitBox.Dock = DockStyle.Left;
+        _speedLimitBox.Width = 190;
+        grid.Controls.Add(_speedLimitBox, 1, 4);
+        _acceptCertificateBox.Text = "Разрешить недоверенный сертификат FTPS (небезопасно)";
+        _acceptCertificateBox.Dock = DockStyle.Fill;
+        _acceptCertificateBox.UseMnemonic = false;
+        grid.SetColumnSpan(_acceptCertificateBox, 2);
+        grid.Controls.Add(_acceptCertificateBox, 0, 5);
 
         page.Controls.Add(grid);
         return page;
@@ -226,6 +254,12 @@ internal sealed class FtpConnectionEditorForm : Form
         }
         _groupBox.Text = _profile.Group;
         _passiveBox.Checked = true;
+        _protocolBox.SelectedIndex = (int)_profile.Protocol;
+        _resumeBox.Checked = _profile.ResumeTransfers;
+        _reconnectBox.Checked = _profile.AutoReconnect;
+        _speedLimitBox.Value = Math.Clamp(_profile.SpeedLimitKbps, 0, Decimal.ToInt32(_speedLimitBox.Maximum));
+        _acceptCertificateBox.Checked = _profile.AcceptAnyCertificate;
+        _acceptCertificateBox.Enabled = _profile.Protocol == RemoteConnectionProtocol.FtpsExplicit;
         UpdateAnonymousFields();
         _nameBox.SelectAll();
     }
@@ -256,6 +290,15 @@ internal sealed class FtpConnectionEditorForm : Form
         _profile.LocalDirectory = _localDirectoryBox.Text.Trim();
         _profile.Group = _groupBox.Text.Trim();
         _profile.PassiveMode = true;
+        _profile.Protocol = (RemoteConnectionProtocol)Math.Max(0, _protocolBox.SelectedIndex);
+        if (_profile.Protocol == RemoteConnectionProtocol.Sftp && port == 21 && !_serverBox.Text.Trim().Contains(':'))
+        {
+            _profile.Port = 22;
+        }
+        _profile.ResumeTransfers = _resumeBox.Checked;
+        _profile.AutoReconnect = _reconnectBox.Checked;
+        _profile.SpeedLimitKbps = Decimal.ToInt32(_speedLimitBox.Value);
+        _profile.AcceptAnyCertificate = _acceptCertificateBox.Checked;
         return true;
     }
 
@@ -270,6 +313,9 @@ internal sealed class FtpConnectionEditorForm : Form
             }
         }
 
+        var sftp = _protocolBox.SelectedIndex == (int)RemoteConnectionProtocol.Sftp;
+        if (sftp && _anonymousBox.Checked) _anonymousBox.Checked = false;
+        _anonymousBox.Enabled = !sftp;
         _userBox.Enabled = !_anonymousBox.Checked;
         _passwordBox.Enabled = !_anonymousBox.Checked;
     }
@@ -293,8 +339,8 @@ internal sealed class FtpConnectionEditorForm : Form
     {
         MessageBox.Show(
             this,
-            "Сервер можно писать как 192.168.1.10, ftp.example.com или host:2121. Удалённый каталог откроется сразу после подключения. Локальный каталог используется для скачивания; если он пустой или недоступен, берётся активная панель главного окна.",
-            "FTP справка",
+            "Сервер можно писать как 192.168.1.10, ftp.example.com или host:2121. FTP использует порт 21, SFTP обычно 22. FTPS здесь означает явное шифрование TLS через AUTH TLS. Возобновление зависит от поддержки команды REST сервером.",
+            "Справка по соединению",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
     }

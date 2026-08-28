@@ -326,7 +326,7 @@ internal sealed class FtpClientForm : Form
 
         await RunBusyAsync("Скачивание...", async token =>
         {
-            var progress = new Progress<string>(text => _statusLabel.Text = text);
+            var progress = new Progress<RemoteTransferProgress>(item => _statusLabel.Text = $"{item.Name}: {item.BytesTransferred / 1024:N0} КБ");
             foreach (var entry in entries)
             {
                 await DownloadEntryAsync(entry, localDirectory, progress, token);
@@ -336,7 +336,7 @@ internal sealed class FtpClientForm : Form
         });
     }
 
-    private async Task DownloadEntryAsync(FtpRemoteEntry entry, string localDirectory, IProgress<string> progress, CancellationToken token)
+    private async Task DownloadEntryAsync(FtpRemoteEntry entry, string localDirectory, IProgress<RemoteTransferProgress> progress, CancellationToken token)
     {
         if (_session is null)
         {
@@ -380,7 +380,7 @@ internal sealed class FtpClientForm : Form
 
         await RunBusyAsync("Закачка файлов...", async token =>
         {
-            var progress = new Progress<string>(text => _statusLabel.Text = text);
+            var progress = new Progress<RemoteTransferProgress>(item => _statusLabel.Text = $"{item.Name}: {item.BytesTransferred / 1024:N0} КБ");
             foreach (var file in dialog.FileNames)
             {
                 var remotePath = FtpClientSession.CombineRemotePath(CurrentRemotePath, Path.GetFileName(file));
@@ -412,7 +412,7 @@ internal sealed class FtpClientForm : Form
 
         await RunBusyAsync("Закачка папки...", async token =>
         {
-            var progress = new Progress<string>(text => _statusLabel.Text = text);
+            var progress = new Progress<RemoteTransferProgress>(item => _statusLabel.Text = $"{item.Name}: {item.BytesTransferred / 1024:N0} КБ");
             var remoteDirectory = FtpClientSession.CombineRemotePath(CurrentRemotePath, Path.GetFileName(dialog.SelectedPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
             await UploadDirectoryAsync(dialog.SelectedPath, remoteDirectory, progress, token);
             await LoadRemoteListAsync(token);
@@ -420,7 +420,7 @@ internal sealed class FtpClientForm : Form
         });
     }
 
-    private async Task UploadDirectoryAsync(string localDirectory, string remoteDirectory, IProgress<string> progress, CancellationToken token)
+    private async Task UploadDirectoryAsync(string localDirectory, string remoteDirectory, IProgress<RemoteTransferProgress> progress, CancellationToken token)
     {
         if (_session is null)
         {
