@@ -80,7 +80,7 @@ internal sealed class SettingsForm : Form
         grid.Controls.Add(CreateButton("Выбрать", (_, _) => ChooseFolderFont()), 2, 1);
 
         grid.Controls.Add(new Label { Text = "Высота строки:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
-        _rowHeightBox.Minimum = 24;
+        _rowHeightBox.Minimum = 12;
         _rowHeightBox.Maximum = 96;
         _rowHeightBox.Dock = DockStyle.Left;
         _rowHeightBox.Width = 104;

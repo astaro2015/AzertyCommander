@@ -18,7 +18,7 @@ internal sealed class FilePanel : UserControl
     private readonly HashSet<string> _markedPaths = new(StringComparer.OrdinalIgnoreCase);
     private Point _dragStartPoint;
     private bool _canStartFileDrag;
-    private DateTime _lastRenameClickUtc = DateTime.MinValue;
+    private long _lastRenameClickTick;
     private string? _lastRenameClickPath;
     private AppThemeSettings _theme = new();
     private Font _fileFont = new("Segoe UI", 9.75F, FontStyle.Regular, GraphicsUnit.Point);
@@ -440,7 +440,7 @@ internal sealed class FilePanel : UserControl
         _activePathBackgroundColor = ColorTools.FromHtml(_theme.ActivePathBackgroundColor, Color.FromArgb(232, 246, 255));
 
         var fontHeight = Math.Ceiling(Math.Max(_fileFont.GetHeight(), _folderFont.GetHeight()));
-        var rowHeight = Math.Max(28, Math.Max(_theme.RowHeight, (int)fontHeight + 8));
+        var rowHeight = Math.Max(12, Math.Max(_theme.RowHeight, (int)fontHeight + 2));
         _grid.RowTemplate.Height = rowHeight;
         foreach (DataGridViewRow row in _grid.Rows)
         {
@@ -1599,10 +1599,10 @@ internal sealed class FilePanel : UserControl
             return;
         }
 
-        var now = DateTime.UtcNow;
-        var elapsed = now - _lastRenameClickUtc;
-        var doubleClickTimeout = TimeSpan.FromMilliseconds(SystemInformation.DoubleClickTime);
-        var slowRenameTimeout = TimeSpan.FromMilliseconds(Math.Max(1200, SystemInformation.DoubleClickTime * 5));
+        var now = Environment.TickCount64;
+        var elapsed = now - _lastRenameClickTick;
+        var doubleClickTimeout = SystemInformation.DoubleClickTime;
+        const int slowRenameTimeout = 5000;
 
         if (string.Equals(_lastRenameClickPath, entry.FullPath, StringComparison.OrdinalIgnoreCase) &&
             elapsed > doubleClickTimeout &&
@@ -1614,7 +1614,7 @@ internal sealed class FilePanel : UserControl
         }
 
         _lastRenameClickPath = entry.FullPath;
-        _lastRenameClickUtc = now;
+        _lastRenameClickTick = now;
     }
 
     private void HandleGridCellMouseClick(DataGridViewCellMouseEventArgs args)
@@ -1679,7 +1679,7 @@ internal sealed class FilePanel : UserControl
     private void ResetSlowRenameClick()
     {
         _lastRenameClickPath = null;
-        _lastRenameClickUtc = DateTime.MinValue;
+        _lastRenameClickTick = 0;
     }
 
     private void HandleMouseNavigation(MouseEventArgs args)
