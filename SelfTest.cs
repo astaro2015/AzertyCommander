@@ -772,6 +772,18 @@ internal static class SelfTest
             }
 
             var panelGrid = DescendantControls(panel).OfType<DataGridView>().Single();
+            foreach (var height in new[] { 12, 24, 12, 34 })
+            {
+                panel.ApplyTheme(new AppThemeSettings { RowHeight = height });
+                panel.LoadPath(left);
+                if (panelGrid.RowTemplate.Height != height ||
+                    panelGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Height != height) ||
+                    panelGrid.DefaultCellStyle.Font.GetHeight() > height - 1)
+                {
+                    Console.Error.WriteLine($"Compact row height application check failed: requested={height}, template={panelGrid.RowTemplate.Height}, rows={string.Join(',', panelGrid.Rows.Cast<DataGridViewRow>().Select(row => row.Height))}, font={panelGrid.DefaultCellStyle.Font.GetHeight()}.");
+                    return false;
+                }
+            }
             var nameColumn = panelGrid.Columns[nameof(FileSystemEntry.DisplayName)];
             if (!panelGrid.AllowUserToResizeColumns ||
                 panelGrid.AutoSizeColumnsMode != DataGridViewAutoSizeColumnsMode.None ||
