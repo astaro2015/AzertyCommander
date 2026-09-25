@@ -4,7 +4,7 @@ internal sealed class SettingsForm : Form
 {
     private readonly Label _fileFontLabel = new();
     private readonly Label _folderFontLabel = new();
-    private readonly NumericUpDown _rowHeightBox = new();
+    private readonly NumericUpDown _rowSpacingBox = new();
     private readonly Dictionary<string, Button> _colorButtons = new(StringComparer.Ordinal);
     private Font _fileFont;
     private Font _folderFont;
@@ -58,7 +58,7 @@ internal sealed class SettingsForm : Form
     {
         var group = new GroupBox { Text = "Шрифты", Dock = DockStyle.Fill };
         var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3, Padding = new Padding(10, 14, 10, 10) };
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
@@ -79,12 +79,12 @@ internal sealed class SettingsForm : Form
         grid.Controls.Add(_folderFontLabel, 1, 1);
         grid.Controls.Add(CreateButton("Выбрать", (_, _) => ChooseFolderFont()), 2, 1);
 
-        grid.Controls.Add(new Label { Text = "Высота строки:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
-        _rowHeightBox.Minimum = 12;
-        _rowHeightBox.Maximum = 96;
-        _rowHeightBox.Dock = DockStyle.Left;
-        _rowHeightBox.Width = 104;
-        grid.Controls.Add(_rowHeightBox, 1, 2);
+        grid.Controls.Add(new Label { Text = "Межстрочный отступ:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
+        _rowSpacingBox.Minimum = 0;
+        _rowSpacingBox.Maximum = 96;
+        _rowSpacingBox.Dock = DockStyle.Left;
+        _rowSpacingBox.Width = 104;
+        grid.Controls.Add(_rowSpacingBox, 1, 2);
 
         group.Controls.Add(grid);
         return group;
@@ -193,7 +193,7 @@ internal sealed class SettingsForm : Form
 
     private void FillFromTheme()
     {
-        _rowHeightBox.Value = Math.Clamp(Theme.RowHeight, (int)_rowHeightBox.Minimum, (int)_rowHeightBox.Maximum);
+        _rowSpacingBox.Value = Math.Clamp(Theme.RowSpacing, (int)_rowSpacingBox.Minimum, (int)_rowSpacingBox.Maximum);
         UpdateFontLabels();
         FillColorButtons();
     }
@@ -225,7 +225,7 @@ internal sealed class SettingsForm : Form
         Theme.FolderFontFamily = _folderFont.FontFamily.Name;
         Theme.FolderFontSize = _folderFont.Size;
         Theme.FolderFontStyle = (int)_folderFont.Style;
-        Theme.RowHeight = (int)_rowHeightBox.Value;
+        Theme.RowSpacing = (int)_rowSpacingBox.Value;
     }
 
     private Color GetThemeColor(string key)

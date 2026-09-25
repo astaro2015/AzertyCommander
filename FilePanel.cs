@@ -439,18 +439,16 @@ internal sealed class FilePanel : UserControl
         _activePanelBackgroundColor = ColorTools.FromHtml(_theme.ActivePanelBackgroundColor, Color.FromArgb(212, 232, 247));
         _activePathBackgroundColor = ColorTools.FromHtml(_theme.ActivePathBackgroundColor, Color.FromArgb(232, 246, 255));
 
-        var rowHeight = Math.Clamp(_theme.RowHeight, 12, 96);
-        _fileFont = FitRowFont(_fileFont, rowHeight);
-        _folderFont = FitRowFont(_folderFont, rowHeight);
-        ((DataGridViewImageColumn)_grid.Columns[IconColumnName]).ImageLayout =
-            rowHeight < 20 ? DataGridViewImageCellLayout.Zoom : DataGridViewImageCellLayout.Normal;
+        var contentHeight = Math.Max(16, (int)Math.Ceiling(Math.Max(_fileFont.GetHeight(), _folderFont.GetHeight())));
+        var rowHeight = contentHeight + 2 + Math.Clamp(_theme.RowSpacing, 0, 96);
+        ((DataGridViewImageColumn)_grid.Columns[IconColumnName]).ImageLayout = DataGridViewImageCellLayout.Normal;
         _grid.RowTemplate.Height = rowHeight;
         foreach (DataGridViewRow row in _grid.Rows)
         {
             row.Height = rowHeight;
         }
 
-        _grid.ColumnHeadersHeight = Math.Max(32, rowHeight + 2);
+        _grid.ColumnHeadersHeight = Math.Max(32, contentHeight + 4);
         _grid.BackgroundColor = _listBackgroundColor;
         _grid.DefaultCellStyle = new DataGridViewCellStyle(_grid.DefaultCellStyle) { Font = _fileFont };
         _grid.DefaultCellStyle.BackColor = _listBackgroundColor;
@@ -458,21 +456,6 @@ internal sealed class FilePanel : UserControl
         ApplySelectionColors();
         _grid.ColumnHeadersDefaultCellStyle.Font = _fileFont;
         _grid.Invalidate();
-    }
-
-    private static Font FitRowFont(Font font, int rowHeight)
-    {
-        var availableHeight = rowHeight - 2;
-        if (font.GetHeight() <= availableHeight)
-        {
-            return font;
-        }
-
-        var emSize = availableHeight * (float)font.FontFamily.GetEmHeight(font.Style) /
-            font.FontFamily.GetLineSpacing(font.Style);
-        var fitted = new Font(font.FontFamily, emSize, font.Style, GraphicsUnit.Pixel);
-        font.Dispose();
-        return fitted;
     }
 
     public Dictionary<string, int> GetColumnWidths()

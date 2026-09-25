@@ -22,6 +22,7 @@ internal sealed class AppThemeSettings
     public float FolderFontSize { get; set; } = 9.75F;
     public int FolderFontStyle { get; set; } = (int)FontStyle.Regular;
     public int RowHeight { get; set; } = DefaultRowHeight;
+    public int RowSpacing { get; set; } = 4;
     public string FileTextColor { get; set; } = "#000000";
     public string FolderTextColor { get; set; } = "#000000";
     public string MarkedTextColor { get; set; } = "#FF0000";
@@ -42,6 +43,7 @@ internal sealed class AppThemeSettings
             FolderFontSize = FolderFontSize,
             FolderFontStyle = FolderFontStyle,
             RowHeight = RowHeight,
+            RowSpacing = RowSpacing,
             FileTextColor = FileTextColor,
             FolderTextColor = FolderTextColor,
             MarkedTextColor = MarkedTextColor,

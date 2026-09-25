@@ -760,7 +760,6 @@ internal static class SelfTest
             {
                 FileFontSize = 10,
                 FolderFontStyle = (int)FontStyle.Bold,
-                RowHeight = 34,
                 MarkedTextColor = "#CC0000",
                 ListBackgroundColor = "#FFFFFF"
             });
@@ -772,15 +771,17 @@ internal static class SelfTest
             }
 
             var panelGrid = DescendantControls(panel).OfType<DataGridView>().Single();
-            foreach (var height in new[] { 12, 24, 12, 34 })
+            foreach (var spacing in new[] { 0, 12, 0, 4 })
             {
-                panel.ApplyTheme(new AppThemeSettings { RowHeight = height });
+                panel.ApplyTheme(new AppThemeSettings { RowSpacing = spacing });
                 panel.LoadPath(left);
+                var font = panelGrid.DefaultCellStyle.Font;
+                var height = Math.Max(16, (int)Math.Ceiling(font.GetHeight())) + 2 + spacing;
                 if (panelGrid.RowTemplate.Height != height ||
                     panelGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Height != height) ||
-                    panelGrid.DefaultCellStyle.Font.GetHeight() > height - 1)
+                    Math.Abs(font.SizeInPoints - 9.75F) > 0.01F)
                 {
-                    Console.Error.WriteLine($"Compact row height application check failed: requested={height}, template={panelGrid.RowTemplate.Height}, rows={string.Join(',', panelGrid.Rows.Cast<DataGridViewRow>().Select(row => row.Height))}, font={panelGrid.DefaultCellStyle.Font.GetHeight()}.");
+                    Console.Error.WriteLine($"Row spacing check failed: spacing={spacing}, expectedHeight={height}, template={panelGrid.RowTemplate.Height}, rows={string.Join(',', panelGrid.Rows.Cast<DataGridViewRow>().Select(row => row.Height))}, font={font.GetHeight()}.");
                     return false;
                 }
             }
